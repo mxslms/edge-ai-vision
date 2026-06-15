@@ -6,8 +6,8 @@ services:
     container_name: fish-detection-app
     restart: unless-stopped
     # Maps the physical USB webcam into the container
-    devices:
-      - /dev/video0:/dev/video0
+   # devices:
+    #  - /dev/video0:/dev/video0
     # Mounts the current folder so logs or outputs save directly to your host
     volumes:
       - .:/usr/src/app

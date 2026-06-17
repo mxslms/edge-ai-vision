@@ -5,14 +5,14 @@ services:
     image: ultralytics/ultralytics:latest
     container_name: fish-detection-app
     restart: unless-stopped
-    # Open port 5000 to the local network
     ports:
       - "5000:5000"
     devices:
       - /dev/video0:/dev/video0
     volumes:
       - .:/usr/src/app
-    command: /bin/bash -c "pip install flask && python app.py"
+    # Change this line to use the full path to your app.py
+    command: /bin/bash -c "pip install flask && python /usr/src/app/app.py"
     deploy:
       resources:
         reservations:

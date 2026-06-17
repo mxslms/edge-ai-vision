@@ -2,16 +2,17 @@ version: '3.8'
 
 services:
   fish-detection-app:
-    build: .
+    image: ultralytics/ultralytics:latest
     container_name: fish-detection-app
     restart: unless-stopped
-    # Maps the physical USB webcam into the container
+    # Open port 5000 to the local network
+    ports:
+      - "5000:5000"
     devices:
-     - /dev/video0:/dev/video0
-    # Mounts the current folder so logs or outputs save directly to your host
+      - /dev/video0:/dev/video0
     volumes:
       - .:/usr/src/app
-    # Allocates the NVIDIA GPU to the container
+    command: python app.py
     deploy:
       resources:
         reservations:

@@ -1,46 +1,54 @@
 import cv2
 import time
+from flask import Flask, Response
 from ultralytics import YOLO
 
+app = Flask(__name__)
+
 print("Initializing Vision System...")
-# Load the model; Ultralytics automatically shifts execution to CUDA/GPU if available
 model = YOLO('yolov8n.pt')
 
-# Target /dev/video0 (the standard index for the first USB webcam)
-camera_index = 0
-print(f"Attempting to connect to hardware camera at index {camera_index}...")
-cap = cv2.VideoCapture(camera_index)
+def generate_frames():
+    # Target /dev/video0
+    cap = cv2.VideoCapture(0)
+    
+    if not cap.isOpened():
+        print("Error: Could not open video device.")
+        return
 
-if not cap.isOpened():
-    print("\n[WARNING] Physical camera not found yet! (This is expected until tomorrow).")
-    print("The container environment and GPU pipelines are fully ready to receive the hardware.")
-    cap.release()
-    exit(0)
-
-print("Camera stream successfully opened. Beginning live inference loop...")
-
-try:
+    print("Live video stream active...")
     while True:
         ret, frame = cap.read()
         if not ret:
-            print("Failed to grab frame from camera stream.")
             break
 
-        # Run model inference on the frame
+        # Run YOLO inference on the frame
         results = model(frame, verbose=False)
 
-        # Process results
-        for result in results:
-            for box in result.boxes:
-                label = model.names[int(box.cls[0])]
-                conf = float(box.conf[0])
-                print(f"[{time.strftime('%H:%M:%S')}] Detected: {label} ({conf*100:.1f}%)")
+        # Plot the bounding boxes and labels directly onto the frame
+        annotated_frame = results[0].plot()
 
-        # Control loop speed slightly (approx 10 FPS) to conserve resources
-        time.sleep(0.1)
+        # Encode the frame as a JPEG
+        ret, buffer = cv2.imencode('.jpg', annotated_frame)
+        if not ret:
+            continue
+            
+        frame_bytes = buffer.tobytes()
 
-except KeyboardInterrupt:
-    print("Closing camera stream...")
-finally:
+        # Stream the bytes as an MJPEG multipart chunk
+        yield (b'--frame\r\n'
+               b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+        
+        # Cap the stream at ~15 FPS to keep things smooth
+        time.sleep(0.06)
+
     cap.release()
-    print("System offline.")
+
+@app.route('/video_feed')
+def video_feed():
+    # Return the dynamic MJPEG stream
+    return Response(generate_frames(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+if __name__ == '__main__':
+    # Run the web server on port 5000, accessible to your local network
+    app.run(host='0.0.0.0', port=5000, threaded=True)

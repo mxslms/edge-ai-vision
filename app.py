@@ -51,4 +51,4 @@ def video_feed():
 
 if __name__ == '__main__':
     # Run the web server on port 5000, accessible to your local network
-    app.run(host='0.0.0.0', port=5000, threaded=True)
+    app.run(host='0.0.0.0', port=5000, threaded=True) # nosec B104

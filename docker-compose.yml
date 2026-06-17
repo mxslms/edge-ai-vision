@@ -12,7 +12,7 @@ services:
       - /dev/video0:/dev/video0
     volumes:
       - .:/usr/src/app
-    command: python app.py
+    command: /bin/bash -c "pip install flask && python app.py"
     deploy:
       resources:
         reservations:

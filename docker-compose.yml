@@ -27,7 +27,7 @@ services:
     volumes:
       - .:/usr/src/app
     # Change this line to use the full path to your app.py
-    command: /bin/bash -c "pip install flask && python /usr/src/app/app.py"
+    command: /bin/bash -c "pip install flask prometheus-client && python /usr/src/app/app.py"
     deploy:
       resources:
         reservations:

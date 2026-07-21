@@ -16,7 +16,7 @@ services:
               capabilities: [gpu]
 
   fish-detection-app:
-    build: .
+    image: ghcr.io/mxslms/edge-ai-vision:latest
     container_name: fish-detection-app
     restart: unless-stopped
     ports:

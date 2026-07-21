@@ -1,7 +1,8 @@
 import time
 
 import cv2
-from flask import Flask, Response
+import numpy as np
+from flask import Flask, Response, jsonify
 from prometheus_client import (CONTENT_TYPE_LATEST, REGISTRY, Counter, Gauge,
                                Histogram, generate_latest)
 from ultralytics import YOLO
@@ -31,41 +32,70 @@ CONFIDENCE_GAUGE = Gauge(
 )
 
 
+def synthetic_frame():
+    """A generated frame used when no camera is present (CI, or a test
+    container running alongside prod that can't claim the single webcam).
+    Lets the full pipeline run so the HTTP layer and metrics are verifiable
+    without hardware. It is not real footage, so detections are not meaningful."""
+    frame = np.zeros((480, 640, 3), dtype=np.uint8)
+    frame[:] = (40, 40, 40)
+    cv2.putText(frame, "NO CAMERA - SYNTHETIC FRAME", (60, 240),
+                cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 165, 255), 2)
+    return frame
+
+
+def infer_and_annotate(frame):
+    """Run inference on one frame, update metrics, return the annotated frame."""
+    with LATENCY_HISTOGRAM.time():
+        results = model(frame, verbose=False)
+
+    for box in results[0].boxes:
+        class_name = model.names[int(box.cls[0])]
+        confidence = float(box.conf[0])
+        DETECTIONS_COUNTER.labels(class_name=class_name).inc()
+        CONFIDENCE_GAUGE.set(confidence)
+
+    return results[0].plot()
+
+
 def generate_frames():
     cap = cv2.VideoCapture(0)  # /dev/video0
+    camera_available = cap.isOpened()
 
-    if not cap.isOpened():
-        print("Error: could not open video device.")
-        return
+    if camera_available:
+        print("Live video stream active...")
+    else:
+        print("No camera at /dev/video0; serving synthetic frames.")
 
-    print("Live video stream active...")
-    while True:
-        ret, frame = cap.read()
-        if not ret:
-            break
+    try:
+        while True:
+            if camera_available:
+                ret, frame = cap.read()
+                if not ret:
+                    break
+            else:
+                frame = synthetic_frame()
 
-        with LATENCY_HISTOGRAM.time():
-            results = model(frame, verbose=False)
+            annotated_frame = infer_and_annotate(frame)
 
-        for box in results[0].boxes:
-            class_name = model.names[int(box.cls[0])]
-            confidence = float(box.conf[0])
-            DETECTIONS_COUNTER.labels(class_name=class_name).inc()
-            CONFIDENCE_GAUGE.set(confidence)
+            ret, buffer = cv2.imencode('.jpg', annotated_frame)
+            if not ret:
+                continue
 
-        annotated_frame = results[0].plot()
+            yield (b'--frame\r\n'
+                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
-        ret, buffer = cv2.imencode('.jpg', annotated_frame)
-        if not ret:
-            continue
+            # Cap the stream at ~15 FPS
+            time.sleep(0.06)
+    finally:
+        cap.release()
 
-        yield (b'--frame\r\n'
-               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
-        # Cap the stream at ~15 FPS
-        time.sleep(0.06)
-
-    cap.release()
+@app.route('/healthz')
+def healthz():
+    """Liveness check. Returns 200 once the app and model are loaded.
+    Does not require a camera, so it is safe to probe from CI."""
+    return jsonify(status="ok", model=str(model.model_name)), 200
 
 
 @app.route('/metrics')

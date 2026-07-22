@@ -1,0 +1,26 @@
+# Test variant. Runs the same ghcr image alongside prod without claiming
+# /dev/video0, so it starts anywhere (no camera, CI, or while prod holds the
+# webcam) and serves synthetic frames. Prod behavior lives in docker-compose.yml.
+#
+#   docker compose -f docker-compose.test.yml up -d
+#
+services:
+  fish-detection-test:
+    image: ghcr.io/mxslms/edge-ai-vision:latest
+    container_name: fish-detection-test
+    restart: "no"
+    ports:
+      - "5001:5000"
+    networks:
+      - monitoring-net
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+networks:
+  monitoring-net:
+    external: true

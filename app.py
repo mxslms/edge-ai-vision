@@ -31,12 +31,27 @@ CONFIDENCE_GAUGE = Gauge(
     'Confidence score of the most recent object detection'
 )
 
+# 1 when frames are coming from a real camera, 0 when serving synthetic frames.
+# Alert on this: a container can be Up and healthy while blind.
+CAMERA_AVAILABLE = Gauge(
+    'edge_camera_available',
+    'Whether a real camera is supplying frames (1) or frames are synthetic (0)'
+)
+CAMERA_AVAILABLE.set(0)
+
+# Increments each time the camera drops out mid-stream, so a flaky USB
+# connection is visible as a rate rather than a single state flip.
+CAMERA_FAILURES = Counter(
+    'edge_camera_failures_total',
+    'Number of times the camera became unavailable while streaming'
+)
+
 
 def synthetic_frame():
     """A generated frame used when no camera is present (CI, or a test
-    container running alongside prod that can't claim the single webcam).
+    container running alongside prod that cannot claim the single webcam).
     Lets the full pipeline run so the HTTP layer and metrics are verifiable
-    without hardware. It is not real footage, so detections are not meaningful."""
+    without hardware. Not real footage, so detections are not meaningful."""
     frame = np.zeros((480, 640, 3), dtype=np.uint8)
     frame[:] = (40, 40, 40)
     cv2.putText(frame, "NO CAMERA - SYNTHETIC FRAME", (60, 240),
@@ -61,6 +76,7 @@ def infer_and_annotate(frame):
 def generate_frames():
     cap = cv2.VideoCapture(0)  # /dev/video0
     camera_available = cap.isOpened()
+    CAMERA_AVAILABLE.set(1 if camera_available else 0)
 
     if camera_available:
         print("Live video stream active...")
@@ -69,17 +85,28 @@ def generate_frames():
 
     try:
         while True:
+            frame = None
+
             if camera_available:
                 ret, frame = cap.read()
                 if not ret:
-                    break
-            else:
+                    # Camera disappeared mid-stream (unplugged, driver reset).
+                    # Degrade to synthetic frames rather than killing the
+                    # stream, but record it so the drop is visible.
+                    print("Camera read failed; falling back to synthetic frames.")
+                    camera_available = False
+                    CAMERA_AVAILABLE.set(0)
+                    CAMERA_FAILURES.inc()
+                    cap.release()
+                    frame = None
+
+            if frame is None:
                 frame = synthetic_frame()
 
             annotated_frame = infer_and_annotate(frame)
 
-            ret, buffer = cv2.imencode('.jpg', annotated_frame)
-            if not ret:
+            ok, buffer = cv2.imencode('.jpg', annotated_frame)
+            if not ok:
                 continue
 
             yield (b'--frame\r\n'
@@ -88,14 +115,15 @@ def generate_frames():
             # Cap the stream at ~15 FPS
             time.sleep(0.06)
     finally:
-        cap.release()
+        if cap.isOpened():
+            cap.release()
 
 
 @app.route('/healthz')
 def healthz():
     """Liveness check. Returns 200 once the app and model are loaded.
     Does not require a camera, so it is safe to probe from CI."""
-    return jsonify(status="ok", model=str(model.model_name)), 200
+    return jsonify(status="ok"), 200
 
 
 @app.route('/metrics')

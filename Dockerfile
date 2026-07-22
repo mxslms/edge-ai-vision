@@ -1,11 +1,12 @@
-# Use the official, pre-built Ultralytics YOLO environment
+# Ultralytics base image provides PyTorch, CUDA, and YOLO dependencies
 FROM ultralytics/ultralytics:latest
 
-# Set the working directory
 WORKDIR /usr/src/app
 
-# Copy your app.py into the container
+# Install app-level dependencies first so this layer caches across code changes
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
 COPY . .
 
-# Run the application
 CMD ["python", "app.py"]

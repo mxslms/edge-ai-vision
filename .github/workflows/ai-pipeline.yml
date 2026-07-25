@@ -201,9 +201,14 @@ jobs:
           cache-from: type=gha,scope=jetson-arm64
           cache-to: type=gha,mode=max,scope=jetson-arm64
 
+      # No GPU on GitHub arm runners. The Jetson image defaults to device=0;
+      # force CPU (+ smaller imgsz) so /video_feed can smoke-test without CUDA.
       - name: Start container
         run: |
-          docker run -d --name edge-jetson-test -p 5000:5000 ${{ env.IMAGE }}:ci-jetson
+          docker run -d --name edge-jetson-test -p 5000:5000 \
+            -e INFERENCE_DEVICE=cpu \
+            -e IMG_SIZE=320 \
+            ${{ env.IMAGE }}:ci-jetson
           echo "Waiting for the Jetson image to load the model and come up..."
           for i in $(seq 1 36); do
             if curl -sf http://localhost:5000/healthz > /dev/null; then
@@ -229,7 +234,8 @@ jobs:
 
       - name: Check /video_feed responds with the MJPEG content type
         run: |
-          CT=$(curl -s -m 5 -o /dev/null -D - http://localhost:5000/video_feed \
+          # CPU YOLO on arm64 can be slow for the first frame; allow headroom.
+          CT=$(curl -s -m 60 -o /dev/null -D - http://localhost:5000/video_feed \
                | grep -i '^content-type:' || true)
           echo "Got: $CT"
           echo "$CT" | grep -qi 'multipart/x-mixed-replace'

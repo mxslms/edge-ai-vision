@@ -6,21 +6,16 @@
 #   - No DCGM exporter (DCGM targets discrete GPUs; use jtop/tegrastats on Jetson)
 #   - Mounts /tmp/argus_socket for optional CSI (nvargus) cameras later
 #
-# Prerequisites on the Jetson:
-#   - JetPack 6.x with Docker + NVIDIA Container Runtime
-#   - USB V4L2 camera at /dev/video0 (or set CAMERA_INDEX)
-#   - External network: docker network create monitoring-net
+# Recommended install (one-shot on the Orin):
+#   ./scripts/install-jetson.sh
 #
-# Prefer the CI-published image (no --build needed after main merges):
+# Manual:
 #   docker pull ghcr.io/mxslms/edge-ai-vision:jetson
 #   docker compose -f docker-compose.jetson.yml up -d
 #
-# Local rebuild on the Orin:
-#   docker compose -f docker-compose.jetson.yml up -d --build
-#
 services:
   fish-detection-app:
-    image: ghcr.io/mxslms/edge-ai-vision:jetson
+    image: ${IMAGE:-ghcr.io/mxslms/edge-ai-vision:jetson}
     build:
       context: .
       dockerfile: Dockerfile.jetson
@@ -28,20 +23,21 @@ services:
     restart: unless-stopped
     runtime: nvidia
     ipc: host
+    env_file:
+      - .env
     ports:
-      - "5000:5000"
+      - "${HOST_PORT:-5000}:5000"
     devices:
       - /dev/video0:/dev/video0
     volumes:
       - /tmp/argus_socket:/tmp/argus_socket
     environment:
-      MODEL_PATH: yolov8n.pt
-      # Drop to 320 if you need more FPS / less power on Orin Nano
-      IMG_SIZE: "640"
-      CONF_THRESHOLD: "0.25"
-      INFERENCE_DEVICE: "0"
-      FRAME_SLEEP: "0.06"
-      CAMERA_INDEX: "0"
+      MODEL_PATH: ${MODEL_PATH:-yolov8n.pt}
+      IMG_SIZE: ${IMG_SIZE:-640}
+      CONF_THRESHOLD: ${CONF_THRESHOLD:-0.25}
+      INFERENCE_DEVICE: ${INFERENCE_DEVICE:-0}
+      FRAME_SLEEP: ${FRAME_SLEEP:-0.06}
+      CAMERA_INDEX: ${CAMERA_INDEX:-0}
     networks:
       - monitoring-net
 

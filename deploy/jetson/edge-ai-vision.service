@@ -1,0 +1,22 @@
+[Unit]
+Description=Edge AI Vision (Jetson Orin)
+Documentation=https://github.com/mxslms/edge-ai-vision
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+WorkingDirectory=/opt/edge-ai-vision
+# Optional best-effort pull on start (leading '-' means failure is ignored so
+# offline / field boots still come up with the last local image).
+# Override with: systemctl edit edge-ai-vision → Environment=PULL_ON_START=0
+Environment=PULL_ON_START=1
+ExecStartPre=-/bin/bash -c 'if [ "${PULL_ON_START}" = "1" ]; then /usr/bin/docker compose -f docker-compose.jetson.yml pull; fi'
+ExecStart=/usr/bin/docker compose -f docker-compose.jetson.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f docker-compose.jetson.yml down
+TimeoutStartSec=0
+
+[Install]
+WantedBy=multi-user.target

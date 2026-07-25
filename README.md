@@ -18,9 +18,11 @@ Built and tested in CI, published to GitHub Container Registry, and deployed to 
 | Compose | `docker-compose.yml` | `docker-compose.jetson.yml` |
 | GPU runtime | NVIDIA Container Toolkit (`deploy.devices`) | `runtime: nvidia` |
 | GPU metrics | `dcgm-exporter` | `jtop` / `tegrastats` (DCGM is for discrete GPUs) |
-| CI | Build + smoke test on GitHub Actions (amd64) | Build **on the Jetson** via `scripts/build-jetson.sh` |
+| CI | Build + smoke on `ubuntu-latest` (amd64) | Build + smoke on `ubuntu-24.04-arm` (arm64), push `:jetson` |
 
 Why separate images: desktop CUDA wheels and Jetson L4T / JetPack CUDA are different ABIs. Pulling the x86 image onto the Orin will not work.
+
+CI builds the Jetson image natively on GitHub’s arm64 runners (thin app layer on Ultralytics’ JetPack 6 base). That proves the image boots and serves HTTP; it does **not** prove Orin GPU / TensorRT performance — still validate once on the device.
 
 ## Architecture
 
@@ -41,21 +43,27 @@ Containers join an external `monitoring-net` Docker network and are scraped by t
 
 ## Pipeline
 
-Every push and pull request runs the same gate; only merges to `main` publish the amd64 image.
+Every push and pull request runs the same lint gate, then two image jobs in parallel. Only merges to `main` publish.
 
 ```
-push / PR  -->  flake8 + Bandit  -->  build amd64 image  -->  start container (no camera)
-                                                              |
-                                                              v
-                                              smoke test /healthz, /metrics, /video_feed
-                                                              |
-                                            (main only) -------+--> push ghcr.io/mxslms/edge-ai-vision:latest
-                                                                          |
-                                                                          v
-                                                              Portainer pulls and deploys (x86)
+push / PR  -->  flake8 + Bandit
+                      |
+          +-----------+-----------+
+          |                       |
+          v                       v
+   build amd64 image        build arm64 Jetson image
+   (ubuntu-latest)          (ubuntu-24.04-arm)
+          |                       |
+          v                       v
+   smoke /healthz etc.      smoke /healthz etc.
+          |                       |
+   (main only)              (main only)
+          |                       |
+          v                       v
+   push :latest             push :jetson
 ```
 
-Jetson images are built on-device (aarch64 + L4T) and tagged `:jetson`. A build that fails the amd64 smoke test is never published as `:latest`.
+A job that fails its smoke test does not publish that tag. The two platforms are independent: an amd64 failure does not block `:jetson`, and vice versa.
 
 ## Endpoints
 
@@ -107,43 +115,80 @@ docker compose -f docker-compose.test.yml up -d   # serves synthetic frames on :
 
 ## Running on Jetson Orin Nano
 
-### Prerequisites
+### Recommended deploy approach
 
-1. Flash **JetPack 6.x** (L4T r36) on the Orin Nano Dev Kit
-2. Install Docker and enable the NVIDIA Container Runtime (`nvidia-container-toolkit`)
-3. Confirm GPU in containers: `docker run --rm --runtime nvidia ultralytics/ultralytics:latest-jetson-jetpack6 nvidia-smi` (or `python -c "import torch; print(torch.cuda.is_available())"`)
-4. Plug in a USB webcam (appears as `/dev/video0`) or adjust `CAMERA_INDEX`
+**Docker Compose + GHCR image + systemd** on the Orin itself.
 
-### Build on the Jetson
+| Approach | Use? | Why |
+|---|---|---|
+| Compose pull `:jetson` + systemd | **Yes (default)** | Matches the x86 Docker model, boots on power-up, low ops overhead |
+| Portainer on the Jetson | No (for now) | Fine on the home server; extra moving parts on a single edge box |
+| Bare-metal pip / venv | No | JetPack CUDA / PyTorch drift becomes your problem |
+| Build every release on-device | Only as fallback | Slow; use when GHCR is unreachable or CI image is missing |
 
-CI publishes only the amd64 `:latest` image. Build the Jetson image on the device:
+The repo is **private**, so the Orin needs a GitHub PAT (`read:packages`) to pull from GHCR.
+
+### One-shot install
+
+1. Flash **JetPack 6.x** (L4T r36)
+2. Install Docker + NVIDIA Container Runtime, then verify:
+
+```bash
+sudo nvidia-ctk runtime configure --runtime=docker
+sudo systemctl restart docker
+docker run --rm --runtime=nvidia ultralytics/ultralytics:latest-jetson-jetpack6 \
+  python -c "import torch; print(torch.cuda.is_available())"   # expect True
+```
+
+3. Plug in a USB webcam (`/dev/video0`) or set `CAMERA_INDEX` later
+4. Clone and install:
 
 ```bash
 git clone https://github.com/mxslms/edge-ai-vision.git
 cd edge-ai-vision
+export GHCR_USER=your-github-username
+export GHCR_TOKEN=ghp_xxxxxxxx          # read:packages
+./scripts/install-jetson.sh
+```
+
+What the installer does:
+
+- logs into `ghcr.io`
+- copies compose + `.env` to `/opt/edge-ai-vision`
+- creates `monitoring-net`
+- pulls `ghcr.io/mxslms/edge-ai-vision:jetson` (or `--build-fallback` to build on-device)
+- installs/enables `edge-ai-vision.service` so it starts on boot
+
+```bash
+curl -sf http://localhost:5000/healthz
+# stream: http://<jetson-ip>:5000/video_feed
+```
+
+Tunables live in `/opt/edge-ai-vision/.env` (from `deploy/jetson/env.example`). After edits:
+
+```bash
+sudo systemctl restart edge-ai-vision
+```
+
+### Manual / optional paths
+
+```bash
+# compose only, no systemd
+./scripts/install-jetson.sh --no-systemd
+
+# if :jetson is not in GHCR yet
+./scripts/install-jetson.sh --build-fallback
+
+# local rebuild / push helpers
 ./scripts/build-jetson.sh
-# optional: ./scripts/build-jetson.sh --push   # needs ghcr.io auth
-```
-
-### Start
-
-```bash
-docker network create monitoring-net
-docker compose -f docker-compose.jetson.yml up -d
-```
-
-Synthetic-frame smoke test on the Jetson (no camera claim):
-
-```bash
-docker compose -f docker-compose.jetson.test.yml up -d
-curl -sf http://localhost:5001/healthz
+docker compose -f docker-compose.jetson.test.yml up -d   # synthetic frames on :5001
 ```
 
 ### Performance notes
 
-- Start with `yolov8n.pt` and `IMG_SIZE=640`. If latency is high, set `IMG_SIZE=320`.
+- Start with `yolov8n.pt` and `IMG_SIZE=640`. If latency is high, set `IMG_SIZE=320` in `.env`.
 - For best FPS later, export a TensorRT engine **on the Jetson** (`yolo export model=yolov8n.pt format=engine`) and point `MODEL_PATH` at the `.engine` file. Engines are not portable across GPU architectures.
-- CSI cameras need GStreamer / nvargus paths; USB V4L2 works with the current OpenCV capture. The compose file already mounts `/tmp/argus_socket` for a future CSI path.
+- CSI cameras need GStreamer / nvargus paths; USB V4L2 works with the current OpenCV capture.
 - Power / thermal: use `jtop` on the host; do not expect DCGM to work on Jetson.
 
 ## Roadmap

@@ -14,9 +14,36 @@ MODEL_PATH = os.environ.get("MODEL_PATH", "yolov8n.pt")
 CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
 CONF_THRESHOLD = float(os.environ.get("CONF_THRESHOLD", "0.25"))
 IMG_SIZE = int(os.environ.get("IMG_SIZE", "640"))
-# Empty string lets Ultralytics pick CUDA when present, CPU otherwise.
-INFERENCE_DEVICE = os.environ.get("INFERENCE_DEVICE", "").strip()
 FRAME_SLEEP = float(os.environ.get("FRAME_SLEEP", "0.06"))
+
+
+def resolve_inference_device(requested):
+    """Normalize INFERENCE_DEVICE. Fall back to CPU when CUDA is requested
+    but unavailable (CI arm64 runners, or a Jetson image started without
+    --runtime=nvidia). Empty string leaves the choice to Ultralytics."""
+    requested = (requested or "").strip()
+    if not requested or requested.lower() == "auto":
+        return ""
+    if requested.lower() == "cpu":
+        return "cpu"
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            return requested
+    except Exception as exc:  # pragma: no cover - import/runtime edge cases
+        print(f"torch/CUDA probe failed ({exc}); falling back to cpu")
+        return "cpu"
+
+    print(
+        f"Requested device={requested} but CUDA is unavailable "
+        f"(torch.cuda.device_count()=0); falling back to cpu"
+    )
+    return "cpu"
+
+
+# Compose on the Orin sets INFERENCE_DEVICE=0; CI overrides / falls back to cpu.
+INFERENCE_DEVICE = resolve_inference_device(os.environ.get("INFERENCE_DEVICE", ""))
 
 app = Flask(__name__)
 

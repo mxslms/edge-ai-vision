@@ -20,6 +20,7 @@
 #   --build-fallback   if :jetson pull fails, build locally with Dockerfile.jetson
 #   --no-systemd       start with compose only; do not install the unit
 #   --skip-login       assume docker is already logged into ghcr.io
+#   --with-monitoring  also deploy node-exporter, cAdvisor, promtail, GPU exporter
 #   --dir DIR          install directory (default: /opt/edge-ai-vision)
 set -euo pipefail
 
@@ -28,6 +29,7 @@ INSTALL_DIR="/opt/edge-ai-vision"
 BUILD_FALLBACK=0
 INSTALL_SYSTEMD=1
 DO_LOGIN=1
+WITH_MONITORING=0
 COMPOSE_FILE="docker-compose.jetson.yml"
 
 log()  { printf '==> %s\n' "$*"; }
@@ -43,6 +45,7 @@ for arg in "$@"; do
     --build-fallback) BUILD_FALLBACK=1 ;;
     --no-systemd) INSTALL_SYSTEMD=0 ;;
     --skip-login) DO_LOGIN=0 ;;
+    --with-monitoring) WITH_MONITORING=1 ;;
     --dir=*) INSTALL_DIR="${arg#--dir=}" ;;
     --dir)
       die "--dir requires a value (use --dir=/path)"
@@ -185,3 +188,12 @@ Install complete.
 
 GPU telemetry on Jetson: use jtop/tegrastats on the host (not DCGM).
 EOF
+
+if [[ "${WITH_MONITORING}" -eq 1 ]]; then
+  log "Deploying monitoring agents (--with-monitoring)"
+  if [[ -z "${HOMELAB_IP:-}" ]]; then
+    die "HOMELAB_IP is required with --with-monitoring (LAN IP of homelab monitoring server)"
+  fi
+  HOMELAB_IP="${HOMELAB_IP}" DEVICE_NAME="${DEVICE_NAME:-jetson-orin-nano}" \
+    "${REPO_ROOT}/scripts/install-jetson-monitoring.sh" --dir="${INSTALL_DIR}"
+fi

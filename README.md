@@ -39,7 +39,7 @@ x86:    dcgm-exporter (:9400) --> GPU utilization / temp / power
 Jetson: jtop / tegrastats     --> GPU / power (host-side)
 ```
 
-Containers join an external `monitoring-net` Docker network and are scraped by the Prometheus instance in [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure), which feeds Grafana and Loki.
+Containers join an external `monitoring-net` Docker network on each host. The Prometheus instance in [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure) scrapes the home server over Docker DNS and Jetson devices over their LAN IP (see **Remote monitoring** below).
 
 ## Pipeline
 
@@ -190,6 +190,44 @@ docker compose -f docker-compose.jetson.test.yml up -d   # synthetic frames on :
 - For best FPS later, export a TensorRT engine **on the Jetson** (`yolo export model=yolov8n.pt format=engine`) and point `MODEL_PATH` at the `.engine` file. Engines are not portable across GPU architectures.
 - CSI cameras need GStreamer / nvargus paths; USB V4L2 works with the current OpenCV capture.
 - Power / thermal: use `jtop` on the host; do not expect DCGM to work on Jetson.
+
+### Remote monitoring (homelab Prometheus)
+
+The Jetson exposes metrics locally; the homelab server **pulls** them over the LAN (same model as monitoring the x86 server, but remote scrape targets instead of shared Docker DNS).
+
+**On the Jetson** (after `install-jetson.sh`):
+
+```bash
+export HOMELAB_IP=192.168.1.10        # LAN IP of the homelab monitoring server
+export DEVICE_NAME=jetson-orin-nano
+./scripts/install-jetson-monitoring.sh
+```
+
+Or in one step:
+
+```bash
+export HOMELAB_IP=192.168.1.10
+./scripts/install-jetson.sh --with-monitoring
+```
+
+This deploys:
+
+| Agent | Port | Metrics |
+|-------|------|---------|
+| node-exporter | 9100 | CPU, memory, disk, network |
+| cAdvisor | 8080 | Container resource usage |
+| jetson-orin-exporter | 9101 | GPU, power, thermals (via jtop) |
+| fish-detection-app | 5000 | Inference latency, detections, camera health |
+| Promtail | — | Pushes Docker logs → homelab Loki |
+
+**On the homelab server**:
+
+```bash
+./scripts/register-jetson-target.sh <jetson-ip> jetson-orin-nano
+curl -X POST http://localhost:9090/-/reload
+```
+
+See [homelab-infrastructure/monitoring/README.md](https://github.com/mxslms/homelab-infrastructure/blob/main/monitoring/README.md) for firewall ports and Grafana dashboard import (Jetson Orin exporter dashboard ID `25079`).
 
 ## Roadmap
 

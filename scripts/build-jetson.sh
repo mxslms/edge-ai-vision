@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# Build (and optionally push) the Jetson Orin image on the device itself.
+# GitHub Actions runners are amd64 and cannot reliably produce this L4T image.
+#
+# Usage on the Jetson:
+#   ./scripts/build-jetson.sh              # local tag only
+#   ./scripts/build-jetson.sh --push       # also push :jetson to GHCR
+set -euo pipefail
+
+IMAGE="${IMAGE:-ghcr.io/mxslms/edge-ai-vision:jetson}"
+PUSH=0
+
+for arg in "$@"; do
+  case "$arg" in
+    --push) PUSH=1 ;;
+    -h|--help)
+      sed -n '2,12p' "$0"
+      exit 0
+      ;;
+    *)
+      echo "Unknown argument: $arg" >&2
+      exit 1
+      ;;
+  esac
+done
+
+arch="$(uname -m)"
+if [[ "$arch" != "aarch64" ]]; then
+  echo "Refusing to build: expected aarch64 Jetson host, got ${arch}." >&2
+  echo "Build this image on the Orin Nano, not on the x86 server." >&2
+  exit 1
+fi
+
+echo "Building ${IMAGE} from Dockerfile.jetson ..."
+docker build -f Dockerfile.jetson -t "${IMAGE}" .
+
+if [[ "$PUSH" -eq 1 ]]; then
+  echo "Pushing ${IMAGE} ..."
+  docker push "${IMAGE}"
+fi
+
+echo "Done. Start with:"
+echo "  docker network create monitoring-net 2>/dev/null || true"
+echo "  docker compose -f docker-compose.jetson.yml up -d"

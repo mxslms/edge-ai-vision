@@ -35,6 +35,18 @@ jobs:
       - name: Security scan with Bandit
         run: bandit -r app.py
 
+      # Jetson images are built on-device (aarch64 + L4T). CI only asserts the
+      # dual-platform files stay present so the Orin path cannot silently rot.
+      - name: Check Jetson dual-platform files exist
+        run: |
+          test -f Dockerfile.jetson
+          test -f docker-compose.jetson.yml
+          test -f docker-compose.jetson.test.yml
+          test -x scripts/build-jetson.sh
+          grep -q 'latest-jetson-jetpack6' Dockerfile.jetson
+          grep -q 'runtime: nvidia' docker-compose.jetson.yml
+          echo "Jetson dual-platform files look intact."
+
   build-scan-test:
     name: Build, Push & Smoke Test
     runs-on: ubuntu-latest

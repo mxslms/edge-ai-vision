@@ -41,6 +41,9 @@ jobs:
           test -f docker-compose.jetson.yml
           test -f docker-compose.jetson.test.yml
           test -x scripts/build-jetson.sh
+          test -x scripts/install-jetson.sh
+          test -f deploy/jetson/edge-ai-vision.service
+          test -f deploy/jetson/env.example
           grep -q 'latest-jetson-jetpack6' Dockerfile.jetson
           grep -q 'runtime: nvidia' docker-compose.jetson.yml
           echo "Jetson dual-platform files look intact."

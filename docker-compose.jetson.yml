@@ -11,6 +11,11 @@
 #   - USB V4L2 camera at /dev/video0 (or set CAMERA_INDEX)
 #   - External network: docker network create monitoring-net
 #
+# Prefer the CI-published image (no --build needed after main merges):
+#   docker pull ghcr.io/mxslms/edge-ai-vision:jetson
+#   docker compose -f docker-compose.jetson.yml up -d
+#
+# Local rebuild on the Orin:
 #   docker compose -f docker-compose.jetson.yml up -d --build
 #
 services:

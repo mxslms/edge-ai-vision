@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
-# Build (and optionally push) the Jetson Orin image on the device itself.
-# GitHub Actions runners are amd64 and cannot reliably produce this L4T image.
+# Optional on-device rebuild of the Jetson Orin image.
+#
+# CI already builds and publishes :jetson from main on ubuntu-24.04-arm
+# (see .github/workflows/ai-pipeline.yml). Prefer:
+#   docker pull ghcr.io/mxslms/edge-ai-vision:jetson
+#
+# Use this script for local iteration on the Orin, or to push a custom build.
 #
 # Usage on the Jetson:
 #   ./scripts/build-jetson.sh              # local tag only

@@ -1,6 +1,7 @@
 # Jetson test variant: same :jetson image, no camera claim, synthetic frames.
+# Pull the CI image or pass --build for a local rebuild.
 #
-#   docker compose -f docker-compose.jetson.test.yml up -d --build
+#   docker compose -f docker-compose.jetson.test.yml up -d
 #
 services:
   fish-detection-test:

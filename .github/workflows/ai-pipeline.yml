@@ -35,8 +35,6 @@ jobs:
       - name: Security scan with Bandit
         run: bandit -r app.py
 
-      # Jetson images are built on-device (aarch64 + L4T). CI only asserts the
-      # dual-platform files stay present so the Orin path cannot silently rot.
       - name: Check Jetson dual-platform files exist
         run: |
           test -f Dockerfile.jetson
@@ -47,8 +45,11 @@ jobs:
           grep -q 'runtime: nvidia' docker-compose.jetson.yml
           echo "Jetson dual-platform files look intact."
 
+  # ---------------------------------------------------------------------------
+  # amd64 / desktop CUDA image (RTX 3070 host)
+  # ---------------------------------------------------------------------------
   build-scan-test:
-    name: Build, Push & Smoke Test
+    name: Build amd64, Smoke Test & Push
     runs-on: ubuntu-latest
     needs: lint-and-scan
     permissions:
@@ -65,7 +66,7 @@ jobs:
           large-packages: true
           docker-images: false
           swap-storage: true
-          
+
       - name: Checkout code
         uses: actions/checkout@v4
 
@@ -81,14 +82,16 @@ jobs:
 
       # Build once, load into the runner's local Docker so we can test the exact
       # image before it is pushed anywhere.
-      - name: Build image (load locally)
+      - name: Build amd64 image (load locally)
         uses: docker/build-push-action@v7
         with:
           context: .
+          file: Dockerfile
+          platforms: linux/amd64
           load: true
           tags: ${{ env.IMAGE }}:ci
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          cache-from: type=gha,scope=amd64
+          cache-to: type=gha,mode=max,scope=amd64
 
       # Run the built image with no camera. app.py falls back to synthetic
       # frames, so the HTTP layer and metrics are exercised without hardware.
@@ -141,3 +144,105 @@ jobs:
         run: |
           docker tag ${{ env.IMAGE }}:ci ${{ env.IMAGE }}:latest
           docker push ${{ env.IMAGE }}:latest
+
+  # ---------------------------------------------------------------------------
+  # arm64 / JetPack 6 image (Jetson Orin Nano)
+  #
+  # Build natively on GitHub's arm64 runners. Do NOT qemu-emulate this on
+  # amd64: the Ultralytics JetPack base is large and CUDA/L4T images are
+  # unreliable under QEMU.
+  #
+  # Smoke tests exercise boot + HTTP only (no Jetson GPU in CI). Device GPU
+  # / TensorRT still need a real Orin for validation.
+  # ---------------------------------------------------------------------------
+  build-jetson:
+    name: Build Jetson arm64, Smoke Test & Push
+    runs-on: ubuntu-24.04-arm
+    needs: lint-and-scan
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Free up disk space
+        uses: jlumbroso/free-disk-space@main
+        with:
+          tool-cache: false
+          android: true
+          dotnet: true
+          haskell: true
+          large-packages: true
+          docker-images: false
+          swap-storage: true
+
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+
+      - name: Build Jetson image (load locally)
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          file: Dockerfile.jetson
+          platforms: linux/arm64
+          load: true
+          tags: ${{ env.IMAGE }}:ci-jetson
+          cache-from: type=gha,scope=jetson-arm64
+          cache-to: type=gha,mode=max,scope=jetson-arm64
+
+      - name: Start container
+        run: |
+          docker run -d --name edge-jetson-test -p 5000:5000 ${{ env.IMAGE }}:ci-jetson
+          echo "Waiting for the Jetson image to load the model and come up..."
+          for i in $(seq 1 36); do
+            if curl -sf http://localhost:5000/healthz > /dev/null; then
+              echo "App is up."
+              exit 0
+            fi
+            sleep 5
+          done
+          echo "App did not become healthy in time. Logs:"
+          docker logs edge-jetson-test
+          exit 1
+
+      - name: Check /healthz
+        run: curl -sf http://localhost:5000/healthz
+
+      - name: Check /metrics exposes the three custom metrics
+        run: |
+          BODY=$(curl -sf http://localhost:5000/metrics)
+          echo "$BODY" | grep -q edge_inference_latency_seconds
+          echo "$BODY" | grep -q edge_detections_total
+          echo "$BODY" | grep -q edge_detection_confidence
+          echo "All three custom metrics are present."
+
+      - name: Check /video_feed responds with the MJPEG content type
+        run: |
+          CT=$(curl -s -m 5 -o /dev/null -D - http://localhost:5000/video_feed \
+               | grep -i '^content-type:' || true)
+          echo "Got: $CT"
+          echo "$CT" | grep -qi 'multipart/x-mixed-replace'
+          echo "Video feed is serving the expected stream type."
+
+      - name: Container logs (always)
+        if: always()
+        run: docker logs edge-jetson-test || true
+
+      - name: Tear down
+        if: always()
+        run: docker rm -f edge-jetson-test || true
+
+      # Only publish :jetson from main, and only after the smoke test passed.
+      - name: Push :jetson (main only)
+        if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+        run: |
+          docker tag ${{ env.IMAGE }}:ci-jetson ${{ env.IMAGE }}:jetson
+          docker push ${{ env.IMAGE }}:jetson

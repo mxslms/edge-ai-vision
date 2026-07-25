@@ -18,9 +18,11 @@ Built and tested in CI, published to GitHub Container Registry, and deployed to 
 | Compose | `docker-compose.yml` | `docker-compose.jetson.yml` |
 | GPU runtime | NVIDIA Container Toolkit (`deploy.devices`) | `runtime: nvidia` |
 | GPU metrics | `dcgm-exporter` | `jtop` / `tegrastats` (DCGM is for discrete GPUs) |
-| CI | Build + smoke test on GitHub Actions (amd64) | Build **on the Jetson** via `scripts/build-jetson.sh` |
+| CI | Build + smoke on `ubuntu-latest` (amd64) | Build + smoke on `ubuntu-24.04-arm` (arm64), push `:jetson` |
 
 Why separate images: desktop CUDA wheels and Jetson L4T / JetPack CUDA are different ABIs. Pulling the x86 image onto the Orin will not work.
+
+CI builds the Jetson image natively on GitHub’s arm64 runners (thin app layer on Ultralytics’ JetPack 6 base). That proves the image boots and serves HTTP; it does **not** prove Orin GPU / TensorRT performance — still validate once on the device.
 
 ## Architecture
 
@@ -41,21 +43,27 @@ Containers join an external `monitoring-net` Docker network and are scraped by t
 
 ## Pipeline
 
-Every push and pull request runs the same gate; only merges to `main` publish the amd64 image.
+Every push and pull request runs the same lint gate, then two image jobs in parallel. Only merges to `main` publish.
 
 ```
-push / PR  -->  flake8 + Bandit  -->  build amd64 image  -->  start container (no camera)
-                                                              |
-                                                              v
-                                              smoke test /healthz, /metrics, /video_feed
-                                                              |
-                                            (main only) -------+--> push ghcr.io/mxslms/edge-ai-vision:latest
-                                                                          |
-                                                                          v
-                                                              Portainer pulls and deploys (x86)
+push / PR  -->  flake8 + Bandit
+                      |
+          +-----------+-----------+
+          |                       |
+          v                       v
+   build amd64 image        build arm64 Jetson image
+   (ubuntu-latest)          (ubuntu-24.04-arm)
+          |                       |
+          v                       v
+   smoke /healthz etc.      smoke /healthz etc.
+          |                       |
+   (main only)              (main only)
+          |                       |
+          v                       v
+   push :latest             push :jetson
 ```
 
-Jetson images are built on-device (aarch64 + L4T) and tagged `:jetson`. A build that fails the amd64 smoke test is never published as `:latest`.
+A job that fails its smoke test does not publish that tag. The two platforms are independent: an amd64 failure does not block `:jetson`, and vice versa.
 
 ## Endpoints
 
@@ -114,21 +122,25 @@ docker compose -f docker-compose.test.yml up -d   # serves synthetic frames on :
 3. Confirm GPU in containers: `docker run --rm --runtime nvidia ultralytics/ultralytics:latest-jetson-jetpack6 nvidia-smi` (or `python -c "import torch; print(torch.cuda.is_available())"`)
 4. Plug in a USB webcam (appears as `/dev/video0`) or adjust `CAMERA_INDEX`
 
-### Build on the Jetson
+### Pull the CI image (preferred)
 
-CI publishes only the amd64 `:latest` image. Build the Jetson image on the device:
+After a merge to `main`, CI publishes `ghcr.io/mxslms/edge-ai-vision:jetson`. On the Orin:
+
+```bash
+docker pull ghcr.io/mxslms/edge-ai-vision:jetson
+docker network create monitoring-net
+docker compose -f docker-compose.jetson.yml up -d
+```
+
+### Build on the Jetson (optional)
+
+Use this for local iteration or if you want to rebuild against a different JetPack base:
 
 ```bash
 git clone https://github.com/mxslms/edge-ai-vision.git
 cd edge-ai-vision
 ./scripts/build-jetson.sh
 # optional: ./scripts/build-jetson.sh --push   # needs ghcr.io auth
-```
-
-### Start
-
-```bash
-docker network create monitoring-net
 docker compose -f docker-compose.jetson.yml up -d
 ```
 

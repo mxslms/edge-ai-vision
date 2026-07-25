@@ -1,0 +1,30 @@
+# Jetson Orin Nano / Orin NX / AGX Orin — JetPack 6.x (L4T r36, linux/arm64).
+# Uses Ultralytics' official JetPack 6 image (CUDA + TensorRT for Jetson iGPU).
+# Do NOT reuse the desktop ultralytics/ultralytics:latest image here; that is
+# amd64 + discrete-GPU CUDA and will not run on Jetson.
+#
+# Build on the Jetson (recommended):
+#   docker build -f Dockerfile.jetson -t ghcr.io/mxslms/edge-ai-vision:jetson .
+FROM ultralytics/ultralytics:latest-jetson-jetpack6
+
+WORKDIR /usr/src/app
+
+# Install app-level dependencies first so this layer caches across code changes
+COPY requirements.txt .
+RUN pip install --no-cache-dir --break-system-packages -r requirements.txt \
+    || pip install --no-cache-dir -r requirements.txt
+
+COPY app.py .
+
+# Bake the default nano weights so field boots do not need outbound network.
+RUN python -c "from ultralytics import YOLO; YOLO('yolov8n.pt')"
+
+# Jetson-friendly defaults; override in docker-compose.jetson.yml as needed.
+ENV MODEL_PATH=yolov8n.pt \
+    IMG_SIZE=640 \
+    CONF_THRESHOLD=0.25 \
+    INFERENCE_DEVICE=0 \
+    FRAME_SLEEP=0.06 \
+    CAMERA_INDEX=0
+
+CMD ["python", "app.py"]

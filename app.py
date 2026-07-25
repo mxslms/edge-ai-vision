@@ -1,3 +1,4 @@
+import os
 import time
 
 import cv2
@@ -7,10 +8,24 @@ from prometheus_client import (CONTENT_TYPE_LATEST, REGISTRY, Counter, Gauge,
                                Histogram, generate_latest)
 from ultralytics import YOLO
 
+# Shared defaults work on the RTX 3070 host and Jetson Orin Nano.
+# Override per platform in compose / Portainer rather than forking the app.
+MODEL_PATH = os.environ.get("MODEL_PATH", "yolov8n.pt")
+CAMERA_INDEX = int(os.environ.get("CAMERA_INDEX", "0"))
+CONF_THRESHOLD = float(os.environ.get("CONF_THRESHOLD", "0.25"))
+IMG_SIZE = int(os.environ.get("IMG_SIZE", "640"))
+# Empty string lets Ultralytics pick CUDA when present, CPU otherwise.
+INFERENCE_DEVICE = os.environ.get("INFERENCE_DEVICE", "").strip()
+FRAME_SLEEP = float(os.environ.get("FRAME_SLEEP", "0.06"))
+
 app = Flask(__name__)
 
-print("Initializing vision system...")
-model = YOLO('yolov8n.pt')
+print(
+    "Initializing vision system..."
+    f" model={MODEL_PATH} imgsz={IMG_SIZE} conf={CONF_THRESHOLD}"
+    f" device={INFERENCE_DEVICE or 'auto'} camera={CAMERA_INDEX}"
+)
+model = YOLO(MODEL_PATH)
 
 # Per-frame inference time on the GPU
 LATENCY_HISTOGRAM = Histogram(
@@ -61,8 +76,16 @@ def synthetic_frame():
 
 def infer_and_annotate(frame):
     """Run inference on one frame, update metrics, return the annotated frame."""
+    predict_kwargs = {
+        "verbose": False,
+        "conf": CONF_THRESHOLD,
+        "imgsz": IMG_SIZE,
+    }
+    if INFERENCE_DEVICE:
+        predict_kwargs["device"] = INFERENCE_DEVICE
+
     with LATENCY_HISTOGRAM.time():
-        results = model(frame, verbose=False)
+        results = model(frame, **predict_kwargs)
 
     for box in results[0].boxes:
         class_name = model.names[int(box.cls[0])]
@@ -74,14 +97,14 @@ def infer_and_annotate(frame):
 
 
 def generate_frames():
-    cap = cv2.VideoCapture(0)  # /dev/video0
+    cap = cv2.VideoCapture(CAMERA_INDEX)
     camera_available = cap.isOpened()
     CAMERA_AVAILABLE.set(1 if camera_available else 0)
 
     if camera_available:
-        print("Live video stream active...")
+        print(f"Live video stream active (camera index {CAMERA_INDEX})...")
     else:
-        print("No camera at /dev/video0; serving synthetic frames.")
+        print(f"No camera at index {CAMERA_INDEX}; serving synthetic frames.")
 
     try:
         while True:
@@ -112,8 +135,8 @@ def generate_frames():
             yield (b'--frame\r\n'
                    b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
 
-            # Cap the stream at ~15 FPS
-            time.sleep(0.06)
+            # Cap the stream (~15 FPS at the default 0.06s sleep)
+            time.sleep(FRAME_SLEEP)
     finally:
         if cap.isOpened():
             cap.release()
@@ -123,7 +146,13 @@ def generate_frames():
 def healthz():
     """Liveness check. Returns 200 once the app and model are loaded.
     Does not require a camera, so it is safe to probe from CI."""
-    return jsonify(status="ok"), 200
+    return jsonify(
+        status="ok",
+        model=MODEL_PATH,
+        imgsz=IMG_SIZE,
+        conf=CONF_THRESHOLD,
+        device=INFERENCE_DEVICE or "auto",
+    ), 200
 
 
 @app.route('/metrics')

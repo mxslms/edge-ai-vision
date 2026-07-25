@@ -193,7 +193,12 @@ docker compose -f docker-compose.jetson.test.yml up -d   # synthetic frames on :
 
 ### Remote monitoring (homelab Prometheus)
 
-The Jetson exposes metrics locally; the homelab server **pulls** them over the LAN (same model as monitoring the x86 server, but remote scrape targets instead of shared Docker DNS).
+You already monitor **server AI** (`edge-vision-app` + `dcgm-exporter`) on the homelab host. This extends that stack so the **same Prometheus** also scrapes the Jetson for:
+
+1. **Hardware** — host metrics + Jetson GPU / power / thermals  
+2. **AI inference** — the same `edge_*` metrics your server app already exposes
+
+The Jetson does not run its own Prometheus/Grafana; the homelab server **pulls** over the LAN.
 
 **On the Jetson** (after `install-jetson.sh`):
 
@@ -210,24 +215,22 @@ export HOMELAB_IP=192.168.1.10
 ./scripts/install-jetson.sh --with-monitoring
 ```
 
-This deploys:
+| What | Agent | Port | Prometheus job |
+|------|-------|------|----------------|
+| Host hardware | node-exporter | 9100 | `node-exporter` (same job as server) |
+| GPU / power / thermals | jetson-orin-exporter | 9101 | `jetson-gpu-exporter` (Jetson only; DCGM stays on the RTX) |
+| AI inference (`edge_*`) | fish-detection-app | 5000 | `edge-vision-app` (same job as server) |
+| Containers | cAdvisor | 8080 | `cadvisor` |
+| Logs | Promtail | — | → homelab Loki |
 
-| Agent | Port | Metrics |
-|-------|------|---------|
-| node-exporter | 9100 | CPU, memory, disk, network |
-| cAdvisor | 8080 | Container resource usage |
-| jetson-orin-exporter | 9101 | GPU, power, thermals (via jtop) |
-| fish-detection-app | 5000 | Inference latency, detections, camera health |
-| Promtail | — | Pushes Docker logs → homelab Loki |
-
-**On the homelab server**:
+**On the homelab server** (existing server scrape jobs stay as-is):
 
 ```bash
 ./scripts/register-jetson-target.sh <jetson-ip> jetson-orin-nano
 curl -X POST http://localhost:9090/-/reload
 ```
 
-See [homelab-infrastructure/monitoring/README.md](https://github.com/mxslms/homelab-infrastructure/blob/main/monitoring/README.md) for firewall ports and Grafana dashboard import (Jetson Orin exporter dashboard ID `25079`).
+In Grafana, filter with `device="jetson-orin-nano"` vs `device="homelab-server"`. Jetson GPU dashboard: import ID `25079`. Details: [homelab-infrastructure/monitoring/README.md](https://github.com/mxslms/homelab-infrastructure/blob/main/monitoring/README.md).
 
 ## Roadmap
 

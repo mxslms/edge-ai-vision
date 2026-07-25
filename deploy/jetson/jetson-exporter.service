@@ -11,7 +11,6 @@ Group=jetson_exporter
 SupplementaryGroups=jtop
 WorkingDirectory=/opt/jetson_exporter
 ExecStart=/usr/bin/python3 /opt/jetson_exporter/jetson_exporter.py
-Environment=JETSON_EXPORTER_PORT=9101
 Restart=on-failure
 RestartSec=5
 

@@ -20,7 +20,6 @@ INSTALL_GPU_EXPORTER=1
 INSTALL_SYSTEMD=1
 COMPOSE_FILE="docker-compose.jetson-monitoring.yml"
 JETSON_EXPORTER_PORT="${JETSON_EXPORTER_PORT:-9101}"
-JETSON_EXPORTER_URL="https://raw.githubusercontent.com/pgodlews/jetson-orin-exporter/main/jetson_exporter.py"
 
 log()  { printf '==> %s\n' "$*"; }
 warn() { printf 'warning: %s\n' "$*" >&2; }
@@ -49,7 +48,6 @@ done
 
 need_cmd docker
 need_cmd sudo
-need_cmd curl
 
 if ! docker compose version >/dev/null 2>&1; then
   die "docker compose plugin not found"
@@ -113,8 +111,10 @@ install_gpu_exporter() {
   fi
 
   log "Installing jetson-orin-exporter on port ${JETSON_EXPORTER_PORT}"
+  [[ -f "${REPO_ROOT}/deploy/jetson/jetson_exporter.py" ]] \
+    || die "missing deploy/jetson/jetson_exporter.py in repo checkout"
   sudo mkdir -p /opt/jetson_exporter
-  sudo curl -fsSL "${JETSON_EXPORTER_URL}" -o /opt/jetson_exporter/jetson_exporter.py
+  sudo cp "${REPO_ROOT}/deploy/jetson/jetson_exporter.py" /opt/jetson_exporter/jetson_exporter.py
   sudo sed -i "s/^PORT = 9101/PORT = ${JETSON_EXPORTER_PORT}/" \
     /opt/jetson_exporter/jetson_exporter.py
 
@@ -125,8 +125,6 @@ install_gpu_exporter() {
   sudo chown -R jetson_exporter:jetson_exporter /opt/jetson_exporter
 
   sudo cp "${REPO_ROOT}/deploy/jetson/jetson-exporter.service" \
-    /etc/systemd/system/jetson-exporter.service
-  sudo sed -i "s/JETSON_EXPORTER_PORT=9101/JETSON_EXPORTER_PORT=${JETSON_EXPORTER_PORT}/" \
     /etc/systemd/system/jetson-exporter.service
 
   sudo systemctl daemon-reload
@@ -148,15 +146,17 @@ cat <<EOF
 
 Jetson monitoring agents are running.
 
-On the homelab server, register this device for Prometheus scraping:
+  Hardware:      node-exporter :${NODE_EXPORTER_PORT:-9100}, jetson-gpu-exporter :${JETSON_EXPORTER_PORT}
+  AI inference:  fish-detection-app :${HOST_PORT}/metrics  (edge_* — from the vision app)
+  Containers:    cAdvisor :${CADVISOR_PORT:-8080}
+  Logs → Loki:   ${LOKI_URL}
+
+On the homelab server (does not change existing server AI / DCGM jobs):
 
   ./scripts/register-jetson-target.sh ${JETSON_IP:-<jetson-ip>} ${DEVICE_NAME}
 
 Local checks:
   curl -sf http://localhost:${NODE_EXPORTER_PORT:-9100}/metrics | head
-  curl -sf http://localhost:${CADVISOR_PORT:-8080}/metrics | head
   curl -sf http://localhost:${JETSON_EXPORTER_PORT}/metrics | head
   curl -sf http://localhost:${HOST_PORT}/metrics | head
-
-Logs ship to: ${LOKI_URL}
 EOF

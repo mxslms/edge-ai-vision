@@ -1,0 +1,29 @@
+# Jetson test variant: same :jetson image, no camera claim, synthetic frames.
+#
+#   docker compose -f docker-compose.jetson.test.yml up -d --build
+#
+services:
+  fish-detection-test:
+    image: ghcr.io/mxslms/edge-ai-vision:jetson
+    build:
+      context: .
+      dockerfile: Dockerfile.jetson
+    container_name: fish-detection-test
+    restart: "no"
+    runtime: nvidia
+    ipc: host
+    ports:
+      - "5001:5000"
+    environment:
+      MODEL_PATH: yolov8n.pt
+      IMG_SIZE: "640"
+      CONF_THRESHOLD: "0.25"
+      INFERENCE_DEVICE: "0"
+      # Point at a missing index so the app stays on synthetic frames
+      CAMERA_INDEX: "99"
+    networks:
+      - monitoring-net
+
+networks:
+  monitoring-net:
+    external: true

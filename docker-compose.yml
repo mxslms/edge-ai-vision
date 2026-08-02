@@ -4,7 +4,7 @@ services:
     container_name: dcgm-exporter
     restart: unless-stopped
     ports:
-      - "9400:9400"
+      - "100.74.115.48:9400:9400"
     networks:
       - monitoring-net
     deploy:
@@ -20,7 +20,7 @@ services:
     container_name: fish-detection-app
     restart: unless-stopped
     ports:
-      - "5000:5000"
+      - "100.74.115.48:5000:5000"
     devices:
       - /dev/video0:/dev/video0
     networks:

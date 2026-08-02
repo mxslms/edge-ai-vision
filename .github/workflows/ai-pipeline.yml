@@ -10,9 +10,44 @@ env:
   IMAGE: ghcr.io/${{ github.repository }}
 
 jobs:
+  # Decide which jobs must run. Image rebuild is expensive (~1hr arm64) —
+  # only trigger it when inputs that bake into Dockerfile.jetson change.
+  changes:
+    name: Detect changes
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: read
+    outputs:
+      app: ${{ steps.filter.outputs.app }}
+      deploy: ${{ steps.filter.outputs.deploy }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Path filter
+        uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            app:
+              - 'app.py'
+              - 'requirements.txt'
+              - 'Dockerfile.jetson'
+              - '.dockerignore'
+            deploy:
+              - 'docker-compose.jetson.yml'
+              - 'docker-compose.jetson.test.yml'
+              - 'scripts/build-jetson.sh'
+              - 'scripts/install-jetson.sh'
+              - 'deploy/jetson/**'
+              - '.github/workflows/**'
+
   lint-and-scan:
     name: Lint & Security Scan
     runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.app == 'true' || needs.changes.outputs.deploy == 'true'
     steps:
       - name: Checkout code
         uses: actions/checkout@v4
@@ -57,11 +92,14 @@ jobs:
   #
   # Smoke tests exercise boot + HTTP only (no Jetson GPU in CI). Device GPU
   # / TensorRT still need a real Orin for validation.
+  #
+  # Skipped unless app-image paths changed (see changes job).
   # ---------------------------------------------------------------------------
   build-jetson:
     name: Build Jetson arm64, Smoke Test & Push
     runs-on: ubuntu-24.04-arm
-    needs: lint-and-scan
+    needs: [changes, lint-and-scan]
+    if: needs.changes.outputs.app == 'true'
     permissions:
       contents: read
       packages: write

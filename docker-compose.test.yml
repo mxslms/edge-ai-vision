@@ -11,8 +11,6 @@ services:
     restart: "no"
     ports:
       - "5001:5000"
-    networks:
-      - monitoring-net
     deploy:
       resources:
         reservations:
@@ -20,7 +18,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-networks:
-  monitoring-net:
-    external: true

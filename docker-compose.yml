@@ -15,24 +15,6 @@ services:
               count: 1
               capabilities: [gpu]
 
-  fish-detection-app:
-    image: ghcr.io/mxslms/edge-ai-vision:latest
-    container_name: fish-detection-app
-    restart: unless-stopped
-    ports:
-      - "100.74.115.48:5000:5000"
-    devices:
-      - /dev/video0:/dev/video0
-    networks:
-      - monitoring-net
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: 1
-              capabilities: [gpu]
-
 networks:
   monitoring-net:
     external: true

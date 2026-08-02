@@ -2,27 +2,27 @@
 
 Real-time object detection with production-style observability. A webcam feed runs through YOLOv8 inference on a GPU, streams annotated video over HTTP, and exposes custom Prometheus metrics so model behavior — latency, detection distribution, confidence drift, camera health — is visible on a Grafana dashboard alongside GPU telemetry.
 
-Built and tested in CI, published to GitHub Container Registry, and deployed to a home GPU server (RTX 3070, Ubuntu, Docker) via Portainer. The same app also runs on an **NVIDIA Jetson Orin Nano** (JetPack 6) for edge / field use; the motivating application is wildlife and fish detection.
+Built and tested in CI, published to GitHub Container Registry, and deployed to an **NVIDIA Jetson Orin Nano** (JetPack 6) for battery-powered field use; the motivating application is wildlife and fish detection.
+
+The app originally ran on a home GPU server (RTX 3070) during development, before the Jetson was available. That server instance has been retired now that the Jetson runs inference for real — the server's `docker-compose.yml` and its amd64 CI build/push job are gone, and `dcgm-exporter` (GPU telemetry, unrelated to this app) moved to [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure)'s monitoring stack. `Dockerfile` (amd64) and `docker-compose.test.yml` remain in this repo for local dev/smoke-testing only — CI no longer builds or publishes an amd64 image.
 
 ![Grafana dashboard showing inference latency percentiles, pipeline throughput, per-class detection timeline, and model confidence gauge](docs/grafana-dashboard.png)
 
-## One app, two platforms
+## Deployment target: Jetson Orin Nano
 
-**Do not fork into a second app.** `app.py` is shared. Platform differences live in the container base image and compose files:
-
-| | Home server (x86) | Jetson Orin Nano |
-|---|---|---|
-| Hardware | RTX 3070 discrete GPU | Orin iGPU (JetPack 6.x) |
-| Dockerfile | `Dockerfile` → `ultralytics/ultralytics:latest` | `Dockerfile.jetson` → `ultralytics/ultralytics:latest-jetson-jetpack6` |
-| Image tag | `ghcr.io/mxslms/edge-ai-vision:latest` | `ghcr.io/mxslms/edge-ai-vision:jetson` |
-| Compose | `docker-compose.yml` | `docker-compose.jetson.yml` |
-| GPU runtime | NVIDIA Container Toolkit (`deploy.devices`) | `runtime: nvidia` |
-| GPU metrics | `dcgm-exporter` | `jtop` / `tegrastats` (DCGM is for discrete GPUs) |
-| CI | Build + smoke on `ubuntu-latest` (amd64) | Build + smoke on `ubuntu-24.04-arm` (arm64), push `:jetson` |
-
-Why separate images: desktop CUDA wheels and Jetson L4T / JetPack CUDA are different ABIs. Pulling the x86 image onto the Orin will not work.
+| | Jetson Orin Nano |
+|---|---|
+| Hardware | Orin iGPU (JetPack 6.x) |
+| Dockerfile | `Dockerfile.jetson` → `ultralytics/ultralytics:latest-jetson-jetpack6` |
+| Image tag | `ghcr.io/mxslms/edge-ai-vision:jetson` |
+| Compose | `docker-compose.jetson.yml` |
+| GPU runtime | `runtime: nvidia` |
+| GPU metrics | `jtop` / `tegrastats` (device-side; homelab's `dcgm-exporter` only covers the server's discrete GPU, not this app) |
+| CI | Build + smoke on `ubuntu-24.04-arm` (arm64), push `:jetson` |
 
 CI builds the Jetson image natively on GitHub’s arm64 runners (thin app layer on Ultralytics’ JetPack 6 base). That proves the image boots and serves HTTP; it does **not** prove Orin GPU / TensorRT performance — still validate once on the device.
+
+`Dockerfile` (amd64) is kept around for local dev/testing only (no camera, synthetic frames via `docker-compose.test.yml`) — it is not built or published by CI and nothing deploys it.
 
 ## Architecture
 
@@ -35,35 +35,26 @@ OpenCV capture --> YOLOv8n inference --> annotated frames --> Flask MJPEG stream
                         v
               Prometheus metrics (:5000/metrics)
 
-x86:    dcgm-exporter (:9400) --> GPU utilization / temp / power
-Jetson: jtop / tegrastats     --> GPU / power (host-side)
+Jetson: jtop / tegrastats --> GPU / power (host-side)
 ```
 
-Containers join an external `monitoring-net` Docker network on each host. The Prometheus instance in [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure) scrapes the home server over Docker DNS and Jetson devices over their LAN IP (see **Remote monitoring** below).
+The Jetson joins an external `monitoring-net` Docker network. The Prometheus instance in [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure) scrapes the Jetson over its LAN IP (see **Remote monitoring** below). `dcgm-exporter` lives entirely in that repo's monitoring stack now — it monitors the homelab server's own discrete GPU and has no relationship to this app.
 
 ## Pipeline
 
-Every push and pull request runs the same lint gate, then two image jobs in parallel. Only merges to `main` publish.
+Every push and pull request runs the lint gate, then the Jetson build job. Only merges to `main` publish.
 
 ```
-push / PR  -->  flake8 + Bandit
-                      |
-          +-----------+-----------+
-          |                       |
-          v                       v
-   build amd64 image        build arm64 Jetson image
-   (ubuntu-latest)          (ubuntu-24.04-arm)
-          |                       |
-          v                       v
-   smoke /healthz etc.      smoke /healthz etc.
-          |                       |
-   (main only)              (main only)
-          |                       |
-          v                       v
-   push :latest             push :jetson
+push / PR  -->  flake8 + Bandit  -->  build arm64 Jetson image (ubuntu-24.04-arm)
+                                              |
+                                              v
+                                       smoke /healthz etc.
+                                              |
+                                        (main only)
+                                              |
+                                              v
+                                        push :jetson
 ```
-
-A job that fails its smoke test does not publish that tag. The two platforms are independent: an amd64 failure does not block `:jetson`, and vice versa.
 
 ## Endpoints
 
@@ -87,7 +78,7 @@ The last two exist because a container can be `Up` and healthy while blind. If t
 
 ## Tunables (environment)
 
-Same variables on both platforms:
+Environment variables:
 
 | Variable | Default | Notes |
 |---|---|---|
@@ -98,21 +89,6 @@ Same variables on both platforms:
 | `CAMERA_INDEX` | `0` | OpenCV index for `/dev/videoN` |
 | `FRAME_SLEEP` | `0.06` | ~15 FPS cap |
 
-## Running on the home server (x86)
-
-Production requires the NVIDIA Container Toolkit and a V4L2 camera at `/dev/video0`. The device mapping is a hard requirement by design: if the camera is missing, the container refuses to start rather than silently serving placeholder frames.
-
-```bash
-docker network create monitoring-net
-docker compose up -d
-```
-
-A test variant runs the same image without claiming the camera, so it can run alongside production on the same host:
-
-```bash
-docker compose -f docker-compose.test.yml up -d   # serves synthetic frames on :5001
-```
-
 ## Running on Jetson Orin Nano
 
 ### Recommended deploy approach
@@ -121,7 +97,7 @@ docker compose -f docker-compose.test.yml up -d   # serves synthetic frames on :
 
 | Approach | Use? | Why |
 |---|---|---|
-| Compose pull `:jetson` + systemd | **Yes (default)** | Matches the x86 Docker model, boots on power-up, low ops overhead |
+| Compose pull `:jetson` + systemd | **Yes (default)** | Standard Docker Compose model, boots on power-up, low ops overhead |
 | Portainer on the Jetson | No (for now) | Fine on the home server; extra moving parts on a single edge box |
 | Bare-metal pip / venv | No | JetPack CUDA / PyTorch drift becomes your problem |
 | Build every release on-device | Only as fallback | Slow; use when GHCR is unreachable or CI image is missing |
@@ -193,12 +169,12 @@ docker compose -f docker-compose.jetson.test.yml up -d   # synthetic frames on :
 
 ### Remote monitoring (homelab Prometheus)
 
-You already monitor **server AI** (`edge-vision-app` + `dcgm-exporter`) on the homelab host. This extends that stack so the **same Prometheus** also scrapes the Jetson for:
+The homelab Prometheus/Grafana stack scrapes the Jetson for:
 
-1. **Hardware** — host metrics + Jetson GPU / power / thermals  
-2. **AI inference** — the same `edge_*` metrics your server app already exposes
+1. **Hardware** — host metrics + Jetson GPU / power / thermals
+2. **AI inference** — the `edge_*` metrics this app exposes
 
-The Jetson does not run its own Prometheus/Grafana; the homelab server **pulls** over the LAN.
+The Jetson does not run its own Prometheus/Grafana; the homelab server **pulls** over the LAN. (There is no server-side app instance anymore — the `edge-vision-app` Prometheus job now targets the Jetson exclusively.)
 
 **On the Jetson** (after `install-jetson.sh`):
 
@@ -217,13 +193,13 @@ export HOMELAB_IP=192.168.1.10
 
 | What | Agent | Port | Prometheus job |
 |------|-------|------|----------------|
-| Host hardware | node-exporter | 9100 | `node-exporter` (same job as server) |
-| GPU / power / thermals | jetson-orin-exporter | 9101 | `jetson-gpu-exporter` (Jetson only; DCGM stays on the RTX) |
-| AI inference (`edge_*`) | fish-detection-app | 5000 | `edge-vision-app` (same job as server) |
+| Host hardware | node-exporter | 9100 | `node-exporter` |
+| GPU / power / thermals | jetson-orin-exporter | 9101 | `jetson-gpu-exporter` (Jetson only; DCGM stays on the homelab server's RTX) |
+| AI inference (`edge_*`) | fish-detection-app | 5000 | `edge-vision-app` (Jetson is the only target) |
 | Containers | cAdvisor | 8080 | `cadvisor` |
 | Logs | Promtail | — | → homelab Loki |
 
-**On the homelab server** (existing server scrape jobs stay as-is):
+**On the homelab server:**
 
 ```bash
 ./scripts/register-jetson-target.sh <jetson-ip> jetson-orin-nano

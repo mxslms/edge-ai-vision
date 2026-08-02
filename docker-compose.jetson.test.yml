@@ -22,9 +22,3 @@ services:
       INFERENCE_DEVICE: "0"
       # Point at a missing index so the app stays on synthetic frames
       CAMERA_INDEX: "99"
-    networks:
-      - monitoring-net
-
-networks:
-  monitoring-net:
-    external: true

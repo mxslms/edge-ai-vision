@@ -13,6 +13,9 @@
 #   docker pull ghcr.io/mxslms/edge-ai-vision:jetson
 #   docker compose -f docker-compose.jetson.yml up -d
 #
+# Monitoring (node-exporter, cAdvisor, Promtail, GPU exporter) lives in
+# homelab-infrastructure/jetson-monitoring — not in this repo.
+#
 services:
   fish-detection-app:
     image: ${IMAGE:-ghcr.io/mxslms/edge-ai-vision:jetson}
@@ -38,9 +41,3 @@ services:
       INFERENCE_DEVICE: ${INFERENCE_DEVICE:-0}
       FRAME_SLEEP: ${FRAME_SLEEP:-0.06}
       CAMERA_INDEX: ${CAMERA_INDEX:-0}
-    networks:
-      - monitoring-net
-
-networks:
-  monitoring-net:
-    external: true

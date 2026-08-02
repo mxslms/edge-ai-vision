@@ -3,8 +3,11 @@
 #
 # Recommended deploy path:
 #   Docker Compose pull from GHCR + systemd unit for boot persistence.
-#   Not Portainer-on-Jetson (extra overhead for one edge box).
+#   Or deploy the same compose via Portainer (Git stack) on the Jetson endpoint.
 #   Not a bare-metal pip install (JetPack/CUDA drift is painful).
+#
+# Monitoring (node-exporter, cAdvisor, Promtail, GPU exporter) is NOT installed
+# here — it lives in homelab-infrastructure/jetson-monitoring.
 #
 # Prerequisites (you do once by hand):
 #   1. Flash JetPack 6.x
@@ -20,7 +23,6 @@
 #   --build-fallback   if :jetson pull fails, build locally with Dockerfile.jetson
 #   --no-systemd       start with compose only; do not install the unit
 #   --skip-login       assume docker is already logged into ghcr.io
-#   --with-monitoring  also deploy node-exporter, cAdvisor, promtail, GPU exporter
 #   --dir DIR          install directory (default: /opt/edge-ai-vision)
 set -euo pipefail
 
@@ -29,7 +31,6 @@ INSTALL_DIR="/opt/edge-ai-vision"
 BUILD_FALLBACK=0
 INSTALL_SYSTEMD=1
 DO_LOGIN=1
-WITH_MONITORING=0
 COMPOSE_FILE="docker-compose.jetson.yml"
 
 log()  { printf '==> %s\n' "$*"; }
@@ -45,13 +46,15 @@ for arg in "$@"; do
     --build-fallback) BUILD_FALLBACK=1 ;;
     --no-systemd) INSTALL_SYSTEMD=0 ;;
     --skip-login) DO_LOGIN=0 ;;
-    --with-monitoring) WITH_MONITORING=1 ;;
+    --with-monitoring)
+      die "--with-monitoring was removed; deploy monitoring from homelab-infrastructure/jetson-monitoring"
+      ;;
     --dir=*) INSTALL_DIR="${arg#--dir=}" ;;
     --dir)
       die "--dir requires a value (use --dir=/path)"
       ;;
     -h|--help)
-      sed -n '2,28p' "$0"
+      sed -n '2,30p' "$0"
       exit 0
       ;;
     *)
@@ -59,9 +62,6 @@ for arg in "$@"; do
       ;;
   esac
 done
-
-# Allow --dir /path form by re-parsing if someone passed it positionally-ish
-# (handled above via --dir= only for simplicity)
 
 [[ "$(uname -m)" == "aarch64" ]] || die "expected aarch64 Jetson host, got $(uname -m)"
 
@@ -139,9 +139,6 @@ if [[ -n "${SUDO_USER:-}" ]]; then
   sudo chown "${SUDO_USER}:${SUDO_USER}" "${INSTALL_DIR}/.env" || true
 fi
 
-log "Ensuring Docker network monitoring-net exists"
-docker network create monitoring-net 2>/dev/null || true
-
 cd "${INSTALL_DIR}"
 
 IMAGE="$(grep -E '^IMAGE=' .env 2>/dev/null | cut -d= -f2- || true)"
@@ -186,14 +183,6 @@ Install complete.
   logs:    docker logs -f fish-detection-app
   service: sudo systemctl status edge-ai-vision
 
-GPU telemetry on Jetson: use jtop/tegrastats on the host (not DCGM).
+Host / GPU / log monitoring: deploy from homelab-infrastructure
+  (jetson-bootstrap + jetson-monitoring). This installer is app-only.
 EOF
-
-if [[ "${WITH_MONITORING}" -eq 1 ]]; then
-  log "Deploying monitoring agents (--with-monitoring)"
-  if [[ -z "${HOMELAB_IP:-}" ]]; then
-    die "HOMELAB_IP is required with --with-monitoring (LAN IP of homelab monitoring server)"
-  fi
-  HOMELAB_IP="${HOMELAB_IP}" DEVICE_NAME="${DEVICE_NAME:-jetson-orin-nano}" \
-    "${REPO_ROOT}/scripts/install-jetson-monitoring.sh" --dir="${INSTALL_DIR}"
-fi

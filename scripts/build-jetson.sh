@@ -45,5 +45,4 @@ if [[ "$PUSH" -eq 1 ]]; then
 fi
 
 echo "Done. Start with:"
-echo "  docker network create monitoring-net 2>/dev/null || true"
 echo "  docker compose -f docker-compose.jetson.yml up -d"

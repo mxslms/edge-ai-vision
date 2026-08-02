@@ -17,12 +17,14 @@ The app originally ran on a home GPU server (RTX 3070) during development, befor
 | Image tag | `ghcr.io/mxslms/edge-ai-vision:jetson` |
 | Compose | `docker-compose.jetson.yml` |
 | GPU runtime | `runtime: nvidia` |
-| GPU metrics | `jtop` / `tegrastats` (device-side; homelab's `dcgm-exporter` only covers the server's discrete GPU, not this app) |
+| GPU metrics | Host-side via [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure) (`jtop` exporter); server RTX uses `dcgm-exporter` there |
 | CI | Build + smoke on `ubuntu-24.04-arm` (arm64), push `:jetson` |
 
 CI builds the Jetson image natively on GitHub’s arm64 runners (thin app layer on Ultralytics’ JetPack 6 base). That proves the image boots and serves HTTP; it does **not** prove Orin GPU / TensorRT performance — still validate once on the device.
 
 `Dockerfile` (amd64) is kept around for local dev/testing only (no camera, synthetic frames via `docker-compose.test.yml`) — it is not built or published by CI and nothing deploys it.
+
+This repo is **app-only**. Jetson host monitoring (node-exporter, cAdvisor, Promtail, GPU exporter) and Portainer bootstrap live in [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure).
 
 ## Architecture
 
@@ -35,10 +37,9 @@ OpenCV capture --> YOLOv8n inference --> annotated frames --> Flask MJPEG stream
                         v
               Prometheus metrics (:5000/metrics)
 
-Jetson: jtop / tegrastats --> GPU / power (host-side)
+Homelab Prometheus scrapes :5000/metrics over the tailnet
+(see homelab-infrastructure/monitoring/targets/jetson-app.yml)
 ```
-
-The Jetson joins an external `monitoring-net` Docker network. The Prometheus instance in [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure) scrapes the Jetson over its LAN IP (see **Remote monitoring** below). `dcgm-exporter` lives entirely in that repo's monitoring stack now — it monitors the homelab server's own discrete GPU and has no relationship to this app.
 
 ## Pipeline
 
@@ -93,12 +94,12 @@ Environment variables:
 
 ### Recommended deploy approach
 
-**Docker Compose + GHCR image + systemd** on the Orin itself.
+**Docker Compose + GHCR image**, either via systemd on the Orin or as a Portainer Git stack on the `jetson-field` endpoint.
 
 | Approach | Use? | Why |
 |---|---|---|
-| Compose pull `:jetson` + systemd | **Yes (default)** | Standard Docker Compose model, boots on power-up, low ops overhead |
-| Portainer on the Jetson | No (for now) | Fine on the home server; extra moving parts on a single edge box |
+| Compose pull `:jetson` + systemd | **Yes** | Boots on power-up, low ops overhead |
+| Portainer Git stack (Jetson endpoint) | **Yes** | Same compose; consistent with infra stacks |
 | Bare-metal pip / venv | No | JetPack CUDA / PyTorch drift becomes your problem |
 | Build every release on-device | Only as fallback | Slow; use when GHCR is unreachable or CI image is missing |
 
@@ -131,7 +132,6 @@ What the installer does:
 
 - logs into `ghcr.io`
 - copies compose + `.env` to `/opt/edge-ai-vision`
-- creates `monitoring-net`
 - pulls `ghcr.io/mxslms/edge-ai-vision:jetson` (or `--build-fallback` to build on-device)
 - installs/enables `edge-ai-vision.service` so it starts on boot
 
@@ -167,46 +167,25 @@ docker compose -f docker-compose.jetson.test.yml up -d   # synthetic frames on :
 - CSI cameras need GStreamer / nvargus paths; USB V4L2 works with the current OpenCV capture.
 - Power / thermal: use `jtop` on the host; do not expect DCGM to work on Jetson.
 
-### Remote monitoring (homelab Prometheus)
+### Observability (homelab Prometheus)
 
-The homelab Prometheus/Grafana stack scrapes the Jetson for:
+This app exposes `edge_*` metrics on `:5000/metrics`. Host hardware, GPU/power, cAdvisor, and Promtail are **not** in this repo — they deploy from [homelab-infrastructure](https://github.com/mxslms/homelab-infrastructure):
 
-1. **Hardware** — host metrics + Jetson GPU / power / thermals
-2. **AI inference** — the `edge_*` metrics this app exposes
+| Repo path | Role |
+|-----------|------|
+| `jetson-bootstrap/` | One-time Portainer agent on the Jetson |
+| `jetson-monitoring/` | node-exporter, cAdvisor, Promtail (+ GPU exporter install) |
+| `monitoring/targets/jetson-*.yml` | Prometheus scrape targets (`device=jetson-field`) |
 
-The Jetson does not run its own Prometheus/Grafana; the homelab server **pulls** over the LAN. (There is no server-side app instance anymore — the `edge-vision-app` Prometheus job now targets the Jetson exclusively.)
+See [homelab-infrastructure/monitoring/README.md](https://github.com/mxslms/homelab-infrastructure/blob/main/monitoring/README.md) and [jetson-monitoring/README.md](https://github.com/mxslms/homelab-infrastructure/blob/main/jetson-monitoring/README.md).
 
-**On the Jetson** (after `install-jetson.sh`):
+In Grafana, filter with `device="jetson-field"`. App metrics:
 
-```bash
-export HOMELAB_IP=192.168.1.10        # LAN IP of the homelab monitoring server
-export DEVICE_NAME=jetson-orin-nano
-./scripts/install-jetson-monitoring.sh
+```promql
+edge_inference_latency_seconds_bucket{device="jetson-field"}
+edge_detections_total{device="jetson-field"}
+edge_camera_available{device="jetson-field"}
 ```
-
-Or in one step:
-
-```bash
-export HOMELAB_IP=192.168.1.10
-./scripts/install-jetson.sh --with-monitoring
-```
-
-| What | Agent | Port | Prometheus job |
-|------|-------|------|----------------|
-| Host hardware | node-exporter | 9100 | `node-exporter` |
-| GPU / power / thermals | jetson-orin-exporter | 9101 | `jetson-gpu-exporter` (Jetson only; DCGM stays on the homelab server's RTX) |
-| AI inference (`edge_*`) | fish-detection-app | 5000 | `edge-vision-app` (Jetson is the only target) |
-| Containers | cAdvisor | 8080 | `cadvisor` |
-| Logs | Promtail | — | → homelab Loki |
-
-**On the homelab server:**
-
-```bash
-./scripts/register-jetson-target.sh <jetson-ip> jetson-orin-nano
-curl -X POST http://localhost:9090/-/reload
-```
-
-In Grafana, filter with `device="jetson-orin-nano"` vs `device="homelab-server"`. Jetson GPU dashboard: import ID `25079`. Details: [homelab-infrastructure/monitoring/README.md](https://github.com/mxslms/homelab-infrastructure/blob/main/monitoring/README.md).
 
 ## Roadmap
 

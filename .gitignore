@@ -1,10 +1,14 @@
+# Local / deploy secrets and overrides (keep example files tracked)
+.env
+.env.*
+!.env.example
+!**/.env.example
+!deploy/**/env.example
+*.key
+*.pem
+secrets/
+
 __pycache__/
 *.py[cod]
 .venv/
 venv/
-
-# Local / deploy secrets and overrides (keep env.example tracked)
-.env
-.env.*
-!.env.example
-!deploy/**/env.example

@@ -13,15 +13,19 @@
 #   docker pull ghcr.io/mxslms/edge-ai-vision:jetson
 #   docker compose -f docker-compose.jetson.yml up -d
 #
+# No `build:` here on purpose — GHCR is the only image source for this file.
+# With both `build:` and `image:` present, `docker compose up` builds locally
+# instead of pulling whenever the image isn't already cached (e.g. a fresh
+# Portainer stack deploy), which needs BuildKit the Jetson agent can't reach.
+# For a local/manual build: docker build -f Dockerfile.jetson -t <tag> .
+#
 # Monitoring (node-exporter, cAdvisor, Promtail, GPU exporter) lives in
 # homelab-infrastructure/jetson-monitoring — not in this repo.
 #
 services:
   fish-detection-app:
     image: ${IMAGE:-ghcr.io/mxslms/edge-ai-vision:jetson}
-    build:
-      context: .
-      dockerfile: Dockerfile.jetson
+    pull_policy: always
     container_name: fish-detection-app
     restart: unless-stopped
     runtime: nvidia

@@ -27,7 +27,8 @@ services:
     runtime: nvidia
     ipc: host
     env_file:
-      - .env
+      - path: .env
+        required: false
     ports:
       - "100.90.234.112:${HOST_PORT:-5000}:5000"
     devices:

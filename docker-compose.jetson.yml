@@ -29,7 +29,7 @@ services:
     env_file:
       - .env
     ports:
-      - "${HOST_PORT:-5000}:5000"
+      - "100.90.234.112:${HOST_PORT:-5000}:5000"
     devices:
       - /dev/video0:/dev/video0
     volumes:

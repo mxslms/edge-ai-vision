@@ -103,6 +103,7 @@ jobs:
     permissions:
       contents: read
       packages: write
+      security-events: write
     steps:
       - name: Free up disk space
         uses: jlumbroso/free-disk-space@main
@@ -138,6 +139,21 @@ jobs:
           tags: ${{ env.IMAGE }}:ci-jetson
           cache-from: type=gha,scope=jetson-arm64
           cache-to: type=gha,mode=max,scope=jetson-arm64
+
+      - name: Scan image with Trivy
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: ${{ env.IMAGE }}:ci-jetson
+          format: 'sarif'
+          output: 'trivy-results.sarif'
+          severity: 'HIGH,CRITICAL'
+          exit-code: '0'
+
+      - name: Upload Trivy results to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: 'trivy-results.sarif'
 
       # No GPU on GitHub arm runners. The Jetson image defaults to device=0;
       # force CPU (+ smaller imgsz) so /video_feed can smoke-test without CUDA.

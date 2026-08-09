@@ -5,7 +5,7 @@
 #
 # Build on the Jetson (recommended):
 #   docker build -f Dockerfile.jetson -t ghcr.io/mxslms/edge-ai-vision:jetson .
-FROM ultralytics/ultralytics:latest-jetson-jetpack6
+FROM ultralytics/ultralytics:8.4.115-jetson-jetpack6
 
 WORKDIR /usr/src/app
 

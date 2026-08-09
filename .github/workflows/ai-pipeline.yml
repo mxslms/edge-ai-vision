@@ -79,7 +79,7 @@ jobs:
           test -x scripts/install-jetson.sh
           test -f deploy/jetson/edge-ai-vision.service
           test -f deploy/jetson/env.example
-          grep -q 'latest-jetson-jetpack6' Dockerfile.jetson
+          grep -q 'jetson-jetpack6' Dockerfile.jetson
           grep -q 'runtime: nvidia' docker-compose.jetson.yml
           echo "Jetson dual-platform files look intact."
 

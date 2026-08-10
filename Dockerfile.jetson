@@ -7,6 +7,18 @@
 #   docker build -f Dockerfile.jetson -t ghcr.io/mxslms/edge-ai-vision:jetson .
 FROM ultralytics/ultralytics:8.4.115-jetson-jetpack6
 
+# Patch generic Ubuntu OS packages Ultralytics hasn't rebuilt against --
+# confirmed via Trivy that 100% of this image's HIGH/CRITICAL findings are
+# ordinary apt packages (gnupg, gstreamer, openssl, libssl3, libtiff5,
+# linux-libc-dev), zero of them CUDA/L4T/TensorRT related. Hold the whole
+# GPU/CUDA stack first (dynamically, not a hardcoded list) so a generic
+# `apt upgrade` can never touch anything platform-version-locked, even by
+# accident -- that mismatch is the exact failure this repo is built around
+# avoiding (see Dockerfile.jetson's own history / plan notes).
+RUN dpkg -l | grep -iE 'nvidia|cuda|l4t|tensorrt|cudnn' | awk '{print $2}' | xargs -r apt-mark hold && \
+    apt-get update && apt-get upgrade -y && \
+    apt-get clean && rm -rf /var/lib/apt/lists/*
+
 WORKDIR /usr/src/app
 
 # Install app-level dependencies first so this layer caches across code changes

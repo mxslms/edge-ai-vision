@@ -37,6 +37,10 @@ CAMERA_RETRY_SECONDS = float(os.environ.get("CAMERA_RETRY_SECONDS", "5"))
 # data, and are never shown on the live stream or counted in
 # edge_detections_total, only saved to disk.
 SAVE_ENABLED = os.environ.get("SAVE_ENABLED", "true").lower() == "true"
+# Default matches the in-container mount point in docker-compose.jetson.yml
+# (the host-side path is separately configurable there via
+# CAPTURE_DIR_HOST) -- change one, change both, or captures silently land
+# somewhere that isn't actually persisted.
 CAPTURE_DIR = os.environ.get("CAPTURE_DIR", "/data/captures")
 SAVE_CONF_FLOOR = float(os.environ.get("SAVE_CONF_FLOOR", "0.25"))
 SAVE_MIN_INTERVAL_SECONDS = float(os.environ.get("SAVE_MIN_INTERVAL_SECONDS", "2.5"))

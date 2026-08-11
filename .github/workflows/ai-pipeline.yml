@@ -148,6 +148,10 @@ jobs:
           output: 'trivy-results.sarif'
           severity: 'HIGH,CRITICAL'
           exit-code: '0'
+          # Trivy's own default is 5m0s, unrelated to any GitHub Actions
+          # job/step timeout -- too short for this image (same issue
+          # already hit and fixed in scripts/trivy-scan/trivy-scan.sh).
+          timeout: '20m'
 
       - name: Upload Trivy results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@c4dd10e44af883a891fe31ced449bcb4a6728b9b # v3

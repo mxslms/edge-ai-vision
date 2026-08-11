@@ -39,6 +39,9 @@ services:
       - /dev/video0:/dev/video0
     volumes:
       - /tmp/argus_socket:/tmp/argus_socket
+      # Bind mount, not a named volume -- this is training data meant to be
+      # browsed/rsync'd/labeled from the host, not opaque Docker storage.
+      - ${CAPTURE_DIR_HOST:-/var/lib/edge-ai-vision/captures}:/data/captures
     environment:
       MODEL_PATH: ${MODEL_PATH:-yolov8n.pt}
       IMG_SIZE: ${IMG_SIZE:-640}
@@ -46,3 +49,16 @@ services:
       INFERENCE_DEVICE: ${INFERENCE_DEVICE:-0}
       FRAME_SLEEP: ${FRAME_SLEEP:-0.06}
       CAMERA_INDEX: ${CAMERA_INDEX:-0}
+      MOTION_ENABLED: ${MOTION_ENABLED:-true}
+      MOTION_THRESHOLD: ${MOTION_THRESHOLD:-0.005}
+      MOTION_TRAILING_SECONDS: ${MOTION_TRAILING_SECONDS:-4.0}
+      SHOW_MOTION_OVERLAY: ${SHOW_MOTION_OVERLAY:-true}
+      CAMERA_RETRY_SECONDS: ${CAMERA_RETRY_SECONDS:-5}
+      SAVE_ENABLED: ${SAVE_ENABLED:-true}
+      CAPTURE_DIR: /data/captures
+      SAVE_CONF_FLOOR: ${SAVE_CONF_FLOOR:-0.25}
+      SAVE_MIN_INTERVAL_SECONDS: ${SAVE_MIN_INTERVAL_SECONDS:-2.5}
+      SAVE_CROPS: ${SAVE_CROPS:-true}
+      RETENTION_DAYS: ${RETENTION_DAYS:-5}
+      RETENTION_MAX_BYTES: ${RETENTION_MAX_BYTES:-10737418240}
+      RETENTION_INTERVAL_SECONDS: ${RETENTION_INTERVAL_SECONDS:-3600}

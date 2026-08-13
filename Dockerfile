@@ -1,7 +1,7 @@
 # Ultralytics base image provides PyTorch, CUDA, and YOLO dependencies.
 # This image targets desktop / discrete GPUs (linux/amd64), e.g. RTX 3070.
 # For Jetson Orin Nano (JetPack 6 / arm64), use Dockerfile.jetson instead.
-FROM ultralytics/ultralytics:8.4.115
+FROM ultralytics/ultralytics:8.4.117
 
 WORKDIR /usr/src/app
 

@@ -81,10 +81,11 @@ cat /sys/module/rtl8822ce/parameters/rtw_power_mgnt   # want 0
 cat /sys/module/rtl8822ce/parameters/rtw_ips_mode     # want 0
 ```
 
-Persisted in `/etc/modprobe.d/rtl8822ce-no-powersave.conf`:
+Persisted in `/etc/modprobe.d/rtl8822ce-stability.conf`, together with the
+roaming parameter from the next section:
 
 ```
-options rtl8822ce rtw_power_mgnt=0 rtw_ips_mode=0
+options rtl8822ce rtw_power_mgnt=0 rtw_ips_mode=0 rtw_max_roaming_times=0
 ```
 
 (These are load-time parameters; they're also writable at runtime via the
@@ -151,12 +152,40 @@ reboot resets both state machines. That is the multi-hour "frozen Jetson"
 symptom, and why only a physical power-cycle ever cleared it.
 
 **The bug is reachable only via the roam path.** No roam → `cfg80211_roamed`
-is never called → it cannot trigger. Pinning the client to a single BSSID
-is therefore a targeted fix, not a workaround. Applied 2026-08-14:
+is never called → it cannot trigger.
+
+#### The fix: disable the driver's roam path (preferred)
+
+`rtw_cfg80211_indicate_connect()` branches on the driver's internal
+`to_roam` counter, which is seeded from the `rtw_max_roaming_times` module
+parameter (`modinfo`: *"The max roaming times to try"*):
+
+* `to_roam > 0` → `cfg80211_roamed()` — the branch that WARNs and wedges
+* `to_roam == 0` → `cfg80211_connect_result()` — ordinary connect path
+
+So `rtw_max_roaming_times=0` makes the buggy branch unreachable **without
+tying the device to a specific AP**. wpa_supplicant still selects the best
+BSSID at association time; the driver just never performs an in-place
+roam. Persisted in `/etc/modprobe.d/rtl8822ce-stability.conf` alongside the
+power-save parameters, and writable at runtime:
 
 ```bash
-nmcli connection modify <SSID> 802-11-wireless.bssid <AP1-5GHZ>
-nmcli connection modify <SSID> 802-11-wireless.band a
+echo 0 | sudo tee /sys/module/rtl8822ce/parameters/rtw_max_roaming_times
+```
+
+Caveat, stated honestly: this reasoning comes from the standard structure
+of this Realtek OOT driver family plus the captured stack trace, not from
+reading this exact build's source (`v5.14.0.4-261-g3e7be62b5`, no source
+tree on the device). It is the better-engineered fix, but it is a strong
+hypothesis rather than a proven one. If an outage recurs with the same
+`sme.c:1202` signature in the logs, fall back to BSSID pinning below,
+which removes roaming entirely and is therefore certain.
+
+#### Fallback: pin to one BSSID (certain, but not portable)
+
+```bash
+sudo /usr/local/sbin/wifi-relock.sh          # scan, pick best, pin, verify
+sudo /usr/local/sbin/wifi-relock.sh --clear  # unpin
 ```
 
 Why it roamed so much in the first place: SSID `<SSID>` is a multi-AP mesh
@@ -166,13 +195,10 @@ associations across 6 BSSIDs in 3 days, for a device that never moves.
 Disconnects were `locally_generated=1` — the client's own roaming logic,
 not AP steering.
 
-**Moving the device:** the pin does not fail over. After repositioning
-(or if that AP is replaced), re-pin to the best local BSSID with:
-
-```bash
-sudo /usr/local/sbin/wifi-relock.sh          # scan, pick best, pin, verify
-sudo /usr/local/sbin/wifi-relock.sh --clear  # unpin entirely (roams again)
-```
+**Moving the device:** with `rtw_max_roaming_times=0` and no pin (the
+current state), nothing needs doing — it will associate with whatever AP
+is best at the new location. Only if you have fallen back to BSSID
+pinning does the pin need re-pointing, via `wifi-relock.sh`.
 
 Source of truth is `deploy/jetson/wifi-relock.sh`. It prefers the
 strongest 5 GHz radio at or above -65 dBm (5 GHz is far less congested

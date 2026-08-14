@@ -1,0 +1,20 @@
+[Unit]
+Description=Read-only HTTP browser for edge-ai-vision captures (tailnet only)
+Documentation=https://github.com/mxslms/edge-ai-vision
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Bound to all interfaces; tailnet-only access is enforced by
+# edge-ai-vision-firewall.service instead (same reasoning as the app's
+# port 5000 -- see that unit and RUNBOOK.md).
+ExecStart=/usr/bin/python3 -m http.server 8000 --directory /var/lib/edge-ai-vision/captures
+Restart=on-failure
+RestartSec=5
+ProtectSystem=strict
+ReadOnlyPaths=/var/lib/edge-ai-vision/captures
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

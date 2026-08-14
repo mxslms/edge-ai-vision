@@ -34,7 +34,12 @@ services:
       - path: .env
         required: false
     ports:
-      - "100.90.234.112:${HOST_PORT:-5000}:5000"
+      # Bound to all interfaces on purpose -- pinning this to the Jetson's
+      # Tailscale IP used to race with Tailscale coming up on boot and
+      # silently fail to bind, breaking the stream after every reboot.
+      # Tailnet-only access is now enforced by a host firewall rule
+      # instead (see deploy/jetson/edge-ai-vision-firewall.sh).
+      - "${HOST_PORT:-5000}:5000"
     devices:
       - /dev/video0:/dev/video0
     volumes:

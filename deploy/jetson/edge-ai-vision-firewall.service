@@ -1,0 +1,12 @@
+[Unit]
+Description=Restrict edge-ai-vision port 5000 to the tailnet
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+ExecStart=/usr/local/sbin/edge-ai-vision-firewall.sh
+
+[Install]
+WantedBy=multi-user.target

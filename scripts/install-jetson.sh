@@ -2,9 +2,19 @@
 # Install Edge AI Vision on a Jetson Orin Nano (JetPack 6.x).
 #
 # Recommended deploy path:
-#   Docker Compose pull from GHCR + systemd unit for boot persistence.
-#   Or deploy the same compose via Portainer (Git stack) on the Jetson endpoint.
-#   Not a bare-metal pip install (JetPack/CUDA drift is painful).
+#   Deploy via Portainer (Git stack) targeting this Jetson's agent endpoint.
+#   That's the only mechanism that should ever run `docker compose` for this
+#   app on a Portainer-managed host -- do NOT also install the systemd unit
+#   below on such a host. On 2026-08-14 we found (the hard way) that a
+#   leftover systemd deployment and a Portainer stack both managing the same
+#   container name silently fight each other: whichever redeploys more
+#   recently wins, so Portainer's "Pull and redeploy" can look like it
+#   worked while a scheduled reboot quietly reverts the container to a
+#   stale local compose file a few hours later. See deploy/jetson/RUNBOOK.md.
+#
+#   The systemd unit (--with-systemd) is legacy, for a Jetson that is NOT
+#   Portainer-managed at all. Not a bare-metal pip install either way
+#   (JetPack/CUDA drift is painful).
 #
 # Monitoring (node-exporter, cAdvisor, Promtail, GPU exporter) is NOT installed
 # here — it lives in homelab-infrastructure/jetson-monitoring.
@@ -13,6 +23,7 @@
 #   1. Flash JetPack 6.x
 #   2. USB camera present as /dev/video0 (or edit CAMERA_INDEX later)
 #   3. Network access to ghcr.io (repo is private → need a GHCR token)
+#   4. Tailscale installed and connected (`tailscale status` shows an IP)
 #
 # Usage (on the Jetson, from a clone of this repo):
 #   export GHCR_USER=your-github-username
@@ -21,7 +32,8 @@
 #
 # Flags:
 #   --build-fallback   if :jetson pull fails, build locally with Dockerfile.jetson
-#   --no-systemd       start with compose only; do not install the unit
+#   --with-systemd     also install+enable the legacy systemd unit (see warning
+#                       above -- only for a Jetson Portainer does NOT manage)
 #   --skip-login       assume docker is already logged into ghcr.io
 #   --dir DIR          install directory (default: /opt/edge-ai-vision)
 set -euo pipefail
@@ -29,7 +41,7 @@ set -euo pipefail
 IMAGE_DEFAULT="ghcr.io/mxslms/edge-ai-vision:jetson"
 INSTALL_DIR="/opt/edge-ai-vision"
 BUILD_FALLBACK=0
-INSTALL_SYSTEMD=1
+INSTALL_SYSTEMD=0
 DO_LOGIN=1
 COMPOSE_FILE="docker-compose.jetson.yml"
 
@@ -44,7 +56,8 @@ need_cmd() {
 for arg in "$@"; do
   case "$arg" in
     --build-fallback) BUILD_FALLBACK=1 ;;
-    --no-systemd) INSTALL_SYSTEMD=0 ;;
+    --with-systemd) INSTALL_SYSTEMD=1 ;;
+    --no-systemd) INSTALL_SYSTEMD=0 ;; # default now; kept for compatibility
     --skip-login) DO_LOGIN=0 ;;
     --with-monitoring)
       die "--with-monitoring was removed; deploy monitoring from homelab-infrastructure/jetson-monitoring"
@@ -154,8 +167,20 @@ else
   die "Failed to pull ${IMAGE}. Merge/publish the Jetson CI image, check GHCR auth, or re-run with --build-fallback."
 fi
 
+log "Installing tailnet-only firewall rule for port 5000"
+sudo cp "${REPO_ROOT}/deploy/jetson/edge-ai-vision-firewall.sh" \
+  /usr/local/sbin/edge-ai-vision-firewall.sh
+sudo chmod +x /usr/local/sbin/edge-ai-vision-firewall.sh
+sudo cp "${REPO_ROOT}/deploy/jetson/edge-ai-vision-firewall.service" \
+  /etc/systemd/system/edge-ai-vision-firewall.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now edge-ai-vision-firewall.service
+
 if [[ "${INSTALL_SYSTEMD}" -eq 1 ]]; then
-  log "Installing systemd unit edge-ai-vision.service"
+  log "Installing legacy systemd unit edge-ai-vision.service"
+  warn "This host will now run 'docker compose up' from BOTH systemd and any"
+  warn "Portainer stack that also targets it. Do not do both -- see the"
+  warn "warning at the top of this script and deploy/jetson/RUNBOOK.md."
   sudo cp "${REPO_ROOT}/deploy/jetson/edge-ai-vision.service" \
     /etc/systemd/system/edge-ai-vision.service
   sudo systemctl daemon-reload
@@ -163,7 +188,7 @@ if [[ "${INSTALL_SYSTEMD}" -eq 1 ]]; then
   log "systemd status:"
   systemctl --no-pager --full status edge-ai-vision.service || true
 else
-  log "Starting with docker compose (no systemd)"
+  log "Starting with docker compose (recommended: hand this stack to Portainer instead)"
   docker compose -f "${COMPOSE_FILE}" up -d --remove-orphans
 fi
 

@@ -99,8 +99,25 @@ also secured):
 - `deploy/jetson/edge-ai-vision-firewall.service` — systemd unit that runs
   it at boot. `install-jetson.sh` installs and enables this automatically.
 
-Verify: `sudo iptables -L INPUT -n -v | grep -E 'dpt:5000|dpt:8000'` should
-show an ACCEPT on `tailscale0` above a DROP on `*` for each port.
+**Must use the `DOCKER-USER` chain, not `INPUT`.** First attempt at this
+put the rules in `INPUT` and they silently never matched: Docker-published
+container ports are DNAT'd in `PREROUTING` and then routed through
+`FORWARD`, not `INPUT`, so an `INPUT` rule has no effect on them. Port 5000
+was actually reachable from the LAN for a few minutes on 2026-08-14 despite
+an `INPUT` rule that looked correct and had tested fine — the earlier
+"LAN blocked" check had only ever been true because the old IP-pinned
+Docker publish never listened on the LAN interface at all, not because any
+firewall rule worked. `DOCKER-USER` is the chain Docker guarantees runs
+before its own rules and never modifies itself; that's what the script
+uses now.
+
+Verify: `sudo iptables -L DOCKER-USER -n -v | grep -E 'dpt:5000|dpt:8000'`
+should show an ACCEPT on `tailscale0` and a DROP on `!tailscale0` for each
+port, and packet counters should climb on the ACCEPT rule as you use the
+app normally. Trust the counters, not just rule presence — confirm from an
+**actual LAN client** (not the Jetson itself; a host curling its own
+Tailscale IP can route via loopback rather than the physical interface a
+rule matches on, giving a false pass/hang either way).
 
 ## 4. Training-data capture browser (host-level, not Docker)
 

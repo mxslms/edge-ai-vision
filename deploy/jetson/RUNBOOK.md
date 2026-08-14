@@ -121,20 +121,79 @@ The failure chain, from the 2026-08-14 08:54 UTC incident:
    further, and the whole thing never reconverges. 55 channel switches, 27
    reconnects, 11 disconnects over ~2 hours until a reboot.
 
-So there are two distinct problems: the *trigger* (CSA handling, made much
-worse by the radio being in a power-save state) and the *failure to
-recover* (roam thrash + PMKID mismatch across 4 BSSIDs). Disabling the
-driver's power save targets the first. If outages continue after that,
-the next lever is the second — pin the client to one BSSID, since this
-device is stationary and has no reason to roam at all:
+### ROOT CAUSE: a kernel bug in the driver's roam path (2026-08-14, confirmed)
+
+Disabling driver power save did **not** stop it — a fourth outage hit at
+14:38 UTC with `rtw_power_mgnt=0`/`rtw_ips_mode=0` verified active since
+11:08 (sysfs writes, not just the modprobe file). That outage left a
+kernel stack trace, which is the actual answer:
+
+```
+WARNING: CPU: 0 PID: 0 at net/wireless/sme.c:1202 cfg80211_roamed+0x460/0x4fc
+Call trace:
+  cfg80211_roamed                      [cfg80211]
+  rtw_cfg80211_indicate_connect        [rtl8822ce]
+  rtw_os_indicate_connect              [rtl8822ce]
+  rtw_indicate_connect                 [rtl8822ce]
+  rtw_joinbss_event_prehandle          [rtl8822ce]
+  report_join_res                      [rtl8822ce]
+  OnAssocRsp                           [rtl8822ce]
+```
+
+`cfg80211_roamed()` warns and **returns early** when a driver reports a
+roam for an interface the kernel does not consider connected. The
+out-of-tree `rtl8822ce` driver desyncs its state machine from cfg80211's
+during a roam and trips exactly that check. Once it aborts, the radio is
+associated at the RF layer but the kernel never registers the connection
+— the interface is up, `iw dev ... link` looks healthy, and nothing can
+route. There is no recovery path in the driver; it stays wedged until a
+reboot resets both state machines. That is the multi-hour "frozen Jetson"
+symptom, and why only a physical power-cycle ever cleared it.
+
+**The bug is reachable only via the roam path.** No roam → `cfg80211_roamed`
+is never called → it cannot trigger. Pinning the client to a single BSSID
+is therefore a targeted fix, not a workaround. Applied 2026-08-14:
 
 ```bash
 nmcli connection modify <SSID> 802-11-wireless.bssid <AP1-5GHZ>
+nmcli connection modify <SSID> 802-11-wireless.band a
 ```
 
-Trade-off: no automatic failover if that specific AP goes down. Worth it
-for a fixed-position device if roam thrash keeps happening; don't do it
-pre-emptively.
+Why it roamed so much in the first place: SSID `<SSID>` is a multi-AP mesh
+and this spot hears six BSSIDs, including far nodes at -71/-72 dBm that
+the client kept selecting over a -46/-56 dBm AP in the same room. 161
+associations across 6 BSSIDs in 3 days, for a device that never moves.
+Disconnects were `locally_generated=1` — the client's own roaming logic,
+not AP steering.
+
+**Moving the device:** the pin does not fail over. After repositioning
+(or if that AP is replaced), re-pin to the best local BSSID with:
+
+```bash
+sudo /usr/local/sbin/wifi-relock.sh          # scan, pick best, pin, verify
+sudo /usr/local/sbin/wifi-relock.sh --clear  # unpin entirely (roams again)
+```
+
+Source of truth is `deploy/jetson/wifi-relock.sh`. It prefers the
+strongest 5 GHz radio at or above -65 dBm (5 GHz is far less congested
+here), else the strongest overall, and sets `band` to match so the client
+cannot be band-steered off the pin.
+
+**Always arm an auto-revert before changing WiFi config over SSH** — a bad
+BSSID means physically walking to the device:
+
+```bash
+sudo systemd-run --on-active=300 --unit=wifi-revert-safety \
+  /usr/local/sbin/wifi-revert.sh
+# ...make the change, confirm connectivity, then:
+sudo systemctl stop wifi-revert-safety.timer
+```
+
+Longer-term alternatives if pinning ever becomes untenable: update the
+Realtek OOT driver, or drop
+`/etc/modprobe.d/nvidia-preferred-oot-modules.conf`'s block on the
+in-kernel `rtw88`/`rtw8822ce` driver and use that instead — it does not
+share this bug, but it is not NVIDIA's supported configuration on JetPack.
 
 Useful forensics for a future incident (persistent journald across reboots
 is already configured, so the previous boot's logs survive):

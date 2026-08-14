@@ -55,25 +55,101 @@ sudo chmod 600 /root/.docker/config.json
 
 ## 3. Networking
 
-### WiFi power-save: off (2026-08-14)
+### WiFi power-save: must be disabled at the DRIVER level (2026-08-14)
 
 This device is on WiFi (`wlP1p1s0`), not wired Ethernet (the onboard port
-`enP8p1s0` exists but has never been cabled up — running a cable is the
-single most reliable fix if this recurs and hasn't been done). WiFi
-power-save caused repeated multi-hour connectivity outages (rapid
-carrier-loss flapping, NetworkManager stuck in a reconnect loop, Jetson
-fully unreachable but still powered on) once the app moved to continuous,
-always-on operation. Fixed via:
+`enP8p1s0` exists but has never been cabled up). The adapter is a Realtek
+RTL8822CE driven by NVIDIA's **out-of-tree `rtl8822ce`** driver —
+`/etc/modprobe.d/nvidia-preferred-oot-modules.conf` deliberately blocks the
+in-kernel `rtw88`/`rtw8822ce` driver in its favor. That detail matters:
+
+> **`iw dev wlP1p1s0 get power_save` is a LIAR on this hardware.**
+> NetworkManager's `wifi.powersave=2` and `iw ... set power_save off` only
+> configure the nl80211/mac80211 layer. The out-of-tree Realtek driver runs
+> its own independent LPS (Leisure Power Save) and IPS (Inactive Power
+> Save, which powers the RF down entirely when idle) state machines that
+> nl80211 does not touch. `iw` will cheerfully report `Power save: off`
+> while `rtw_power_mgnt=2` and `rtw_ips_mode=1` leave the radio fully
+> power-saving. We "fixed" power-save on 2026-08-13 via NetworkManager,
+> verified it with `iw`, got a false pass, and the device went dark for
+> another two hours the next morning.
+
+**Always check the driver's own parameters, not `iw`:**
 
 ```bash
-sudo tee /etc/NetworkManager/conf.d/wifi-powersave-off.conf > /dev/null <<'EOF'
-[connection]
-wifi.powersave = 2
-EOF
-sudo systemctl restart NetworkManager
+cat /sys/module/rtl8822ce/parameters/rtw_power_mgnt   # want 0
+cat /sys/module/rtl8822ce/parameters/rtw_ips_mode     # want 0
 ```
 
-Verify with `iw dev wlP1p1s0 get power_save` → should say `off`.
+Persisted in `/etc/modprobe.d/rtl8822ce-no-powersave.conf`:
+
+```
+options rtl8822ce rtw_power_mgnt=0 rtw_ips_mode=0
+```
+
+(These are load-time parameters; they're also writable at runtime via the
+sysfs paths above if you need them applied without a reboot.)
+
+The NetworkManager `wifi.powersave=2` config from the first attempt is
+still in place at `/etc/NetworkManager/conf.d/wifi-powersave-off.conf`.
+It's harmless and correct as far as it goes — it's just not sufficient on
+its own, which is the whole lesson here.
+
+### How the outages actually unfold
+
+Worth understanding, because the symptom looks like a device crash and
+isn't. The OS never froze in any incident — journald kept logging
+continuously the whole time. Only the network died, which is why the power
+light stayed on, SSH was dead, and a physical power-cycle "fixed" it (that
+resets the radio; restarting the app never would have).
+
+The failure chain, from the 2026-08-14 08:54 UTC incident:
+
+1. Baseline is genuinely clean — **zero** roam/disconnect/channel-switch
+   events for six straight hours beforehand. Signal is strong (-54 dBm,
+   390 Mbit/s VHT). This is not slow signal degradation or range.
+2. A discrete trigger: the AP issues an 802.11 channel-switch announcement
+   (CSA). The driver drops carrier outright instead of switching in place.
+3. That forces a full reassociation into a multi-AP network — SSID `<SSID>`
+   has 4 BSSIDs (2 physical APs × 2 radios, OUI `<VENDOR-OUI>`). Band/mesh
+   steering starts bouncing the client between them.
+4. The APs begin refusing it: `CTRL-EVENT-ASSOC-REJECT status_code=1`
+   (unspecified failure) ×9, plus deauths with `reason=2` (prev auth no
+   longer valid), `reason=53` (invalid PMKID — stale PMK cache from the
+   rapid roaming), and `reason=77`.
+5. wpa_supplicant starts ignore-listing BSSIDs, which shrinks its options
+   further, and the whole thing never reconverges. 55 channel switches, 27
+   reconnects, 11 disconnects over ~2 hours until a reboot.
+
+So there are two distinct problems: the *trigger* (CSA handling, made much
+worse by the radio being in a power-save state) and the *failure to
+recover* (roam thrash + PMKID mismatch across 4 BSSIDs). Disabling the
+driver's power save targets the first. If outages continue after that,
+the next lever is the second — pin the client to one BSSID, since this
+device is stationary and has no reason to roam at all:
+
+```bash
+nmcli connection modify <SSID> 802-11-wireless.bssid <AP1-5GHZ>
+```
+
+Trade-off: no automatic failover if that specific AP goes down. Worth it
+for a fixed-position device if roam thrash keeps happening; don't do it
+pre-emptively.
+
+Useful forensics for a future incident (persistent journald across reboots
+is already configured, so the previous boot's logs survive):
+
+```bash
+# Did the OS actually die, or just the network? Look for real journal gaps:
+journalctl --since '<start>' --until '<end>' -o short-unix --no-pager \
+  | awk '{split($1,a,"."); t=a[1]; if (prev && (t-prev)>120) \
+      print "GAP:", (t-prev), "sec ending", strftime("%F %T",t); prev=t}'
+
+# What the supplicant saw (reason/status codes are the real diagnosis):
+journalctl --since '<start>' --no-pager \
+  | grep -oE 'CTRL-EVENT-[A-Z-]+|status_code=[0-9]+|reason=[0-9]+' \
+  | sort | uniq -c | sort -rn
+```
 
 **Gotcha:** restarting NetworkManager can wipe the iptables NAT rules
 Docker set up for a running container's published ports, without crashing

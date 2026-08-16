@@ -81,11 +81,12 @@ cat /sys/module/rtl8822ce/parameters/rtw_power_mgnt   # want 0
 cat /sys/module/rtl8822ce/parameters/rtw_ips_mode     # want 0
 ```
 
-Persisted in `/etc/modprobe.d/rtl8822ce-stability.conf`, together with the
-roaming parameter from the next section:
+Persisted in `/etc/modprobe.d/rtl8822ce-stability.conf`. Power-save
+parameters only — do **not** add `rtw_max_roaming_times` here; see the
+warning below for why that bricks the device at boot:
 
 ```
-options rtl8822ce rtw_power_mgnt=0 rtw_ips_mode=0 rtw_max_roaming_times=0
+options rtl8822ce rtw_power_mgnt=0 rtw_ips_mode=0
 ```
 
 (These are load-time parameters; they're also writable at runtime via the
@@ -154,34 +155,45 @@ symptom, and why only a physical power-cycle ever cleared it.
 **The bug is reachable only via the roam path.** No roam → `cfg80211_roamed`
 is never called → it cannot trigger.
 
-#### The fix: disable the driver's roam path (preferred)
+#### ⛔ DO NOT set `rtw_max_roaming_times=0` — it bricks the device at boot
 
-`rtw_cfg80211_indicate_connect()` branches on the driver's internal
-`to_roam` counter, which is seeded from the `rtw_max_roaming_times` module
-parameter (`modinfo`: *"The max roaming times to try"*):
+This was tried on 2026-08-14 and **must not be repeated.** The reasoning
+looked sound: `rtw_cfg80211_indicate_connect()` branches on the driver's
+internal `to_roam` counter, seeded from `rtw_max_roaming_times`
+(`modinfo`: *"The max roaming times to try"*), and `to_roam == 0` takes
+`cfg80211_connect_result()` instead of the buggy `cfg80211_roamed()`.
 
-* `to_roam > 0` → `cfg80211_roamed()` — the branch that WARNs and wedges
-* `to_roam == 0` → `cfg80211_connect_result()` — ordinary connect path
+That part appears to be correct — see the results below. The problem is
+that the same parameter **also seeds the join-retry counter**. At `0` the
+driver gets exactly one attempt to associate and never retries. On a
+running system that is invisible, because the existing association simply
+persists; the device ran two clean days that way and looked like a
+success. But on the next *boot*, the first association attempt failed,
+there was no retry, and the device never came up — repeated power cycles
+did not help, since the value was baked into `/etc/modprobe.d/` and
+applied at every module load.
 
-So `rtw_max_roaming_times=0` makes the buggy branch unreachable **without
-tying the device to a specific AP**. wpa_supplicant still selects the best
-BSSID at association time; the driver just never performs an in-place
-roam. Persisted in `/etc/modprobe.d/rtl8822ce-stability.conf` alongside the
-power-save parameters, and writable at runtime:
+Recovery required racing an SSH window during a brief flap to rewrite the
+modprobe file, then rebooting: writing the sysfs value at runtime is *not*
+sufficient, because the driver captures the value into its own state at
+init and ignores later changes.
 
-```bash
-echo 0 | sudo tee /sys/module/rtl8822ce/parameters/rtw_max_roaming_times
-```
+**Lesson: this is a load-time parameter. Validating it at runtime only
+exercises the one case where it cannot fail. Reboot before trusting it.**
 
-Caveat, stated honestly: this reasoning comes from the standard structure
-of this Realtek OOT driver family plus the captured stack trace, not from
-reading this exact build's source (`v5.14.0.4-261-g3e7be62b5`, no source
-tree on the device). It is the better-engineered fix, but it is a strong
-hypothesis rather than a proven one. If an outage recurs with the same
-`sme.c:1202` signature in the logs, fall back to BSSID pinning below,
-which removes roaming entirely and is therefore certain.
+#### What the two-day run did prove
 
-#### Fallback: pin to one BSSID (certain, but not portable)
+The roam-path diagnosis itself held up. Across 2026-08-14 17:00 →
+2026-08-16 13:00 with roaming suppressed there were **zero** `sme.c:1202`
+warnings and zero kernel warnings of any kind, versus a wedge roughly
+every 12 hours before. So suppressing roaming does prevent this bug — it
+just has to be done without disabling join retries. Use BSSID pinning for
+that (below), which stops roaming without touching the retry counter.
+
+The 2026-08-16 12:40 UTC outage had a *different* cause — no `sme.c:1202`,
+no kernel warning — and is still under investigation.
+
+#### Pin to one BSSID (the safe way to stop roaming)
 
 ```bash
 sudo /usr/local/sbin/wifi-relock.sh          # scan, pick best, pin, verify
@@ -195,10 +207,9 @@ associations across 6 BSSIDs in 3 days, for a device that never moves.
 Disconnects were `locally_generated=1` — the client's own roaming logic,
 not AP steering.
 
-**Moving the device:** with `rtw_max_roaming_times=0` and no pin (the
-current state), nothing needs doing — it will associate with whatever AP
-is best at the new location. Only if you have fallen back to BSSID
-pinning does the pin need re-pointing, via `wifi-relock.sh`.
+**Moving the device:** if no BSSID pin is set (the current state), nothing
+needs doing — it associates with whatever AP is best at the new location.
+If a pin *is* set, re-point it with `wifi-relock.sh` after moving.
 
 Source of truth is `deploy/jetson/wifi-relock.sh`. It prefers the
 strongest 5 GHz radio at or above -65 dBm (5 GHz is far less congested

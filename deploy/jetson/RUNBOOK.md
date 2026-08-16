@@ -1,11 +1,40 @@
 # Jetson field-device runbook
 
-Everything here is config that lives only on the physical `jetson-field`
-device (or in Portainer/Tailscale's own state) and is **not** reproduced by
-cloning this repo or running the installer alone. If this Jetson dies and
-gets replaced, this is the list of things to redo by hand. Dates mark when
+Host-level config for the physical `jetson-field` device. Dates mark when
 something was discovered/decided, for context, not because it's expected to
 change again.
+
+**As of 2026-08-16 most of this is tracked and installable.** `deploy/jetson/`
+holds the real files and `scripts/install-jetson.sh` deploys them:
+
+| File | Installed to |
+|---|---|
+| `rtl8822ce-stability.conf` | `/etc/modprobe.d/` |
+| `wifi-powersave-off.conf` | `/etc/NetworkManager/conf.d/` |
+| `wifi-relock.sh`, `wifi-revert.sh` | `/usr/local/sbin/` |
+| `edge-ai-vision-firewall.{sh,service}` | `/usr/local/sbin/`, `/etc/systemd/system/` |
+| `edge-ai-captures-browser.service` | `/etc/systemd/system/` |
+
+Persistent journald lives in the other repo, at
+`homelab-infrastructure/scripts/journald-persistent/` — install it early on
+any new host, because without it a reboot destroys the evidence for whatever
+you rebooted to fix.
+
+**Still genuinely manual** (cannot or should not be in git):
+
+* Tailscale enrolment (`tailscale up`), and the device's tailnet ACL tags.
+* `docker login ghcr.io` — see §2. Credentials, so never committed.
+* The WiFi **BSSID pin**, which lives in NetworkManager's connection profile
+  alongside the PSK. Reproduce it by running `wifi-relock.sh`, not by
+  copying a file.
+* Adding the device as a Portainer endpoint.
+
+**Nothing on this device auto-updates from git** except the Portainer
+stacks. Every file above is a *copy*; editing the repo does not change the
+device and vice versa. That drift has already caused two incidents — a
+stale `docker-compose.jetson.yml` silently writing captures to throwaway
+container storage, and a stale `jetson_exporter.py`. After changing any of
+these in git, re-run the installer or copy the file across deliberately.
 
 ## 1. Base OS / hardware prerequisites
 
@@ -112,8 +141,8 @@ The failure chain, from the 2026-08-14 08:54 UTC incident:
    390 Mbit/s VHT). This is not slow signal degradation or range.
 2. A discrete trigger: the AP issues an 802.11 channel-switch announcement
    (CSA). The driver drops carrier outright instead of switching in place.
-3. That forces a full reassociation into a multi-AP network — SSID `<SSID>`
-   has 4 BSSIDs (2 physical APs × 2 radios, OUI `<VENDOR-OUI>`). Band/mesh
+3. That forces a full reassociation into a multi-AP network — the house SSID
+   has 4 BSSIDs (2 physical APs × 2 radios, a shared vendor OUI). Band/mesh
    steering starts bouncing the client between them.
 4. The APs begin refusing it: `CTRL-EVENT-ASSOC-REJECT status_code=1`
    (unspecified failure) ×9, plus deauths with `reason=2` (prev auth no
@@ -250,7 +279,7 @@ sudo /usr/local/sbin/wifi-relock.sh          # scan, pick best, pin, verify
 sudo /usr/local/sbin/wifi-relock.sh --clear  # unpin
 ```
 
-Why it roamed so much in the first place: SSID `<SSID>` is a multi-AP mesh
+Why it roamed so much in the first place: the house SSID is a multi-AP mesh
 and this spot hears six BSSIDs, including far nodes at -71/-72 dBm that
 the client kept selecting over a -46/-56 dBm AP in the same room. 161
 associations across 6 BSSIDs in 3 days, for a device that never moves.

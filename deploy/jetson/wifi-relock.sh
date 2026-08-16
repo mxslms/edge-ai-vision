@@ -8,7 +8,7 @@
 # the lock has to be re-pointed by hand whenever the radio environment
 # changes rather than left to fail over on its own.
 #
-# Usage:  sudo ./wifi-relock.sh [connection-name]     (default: <SSID>)
+# Usage:  sudo ./wifi-relock.sh [connection-name]     (default: the active wifi connection)
 #         sudo ./wifi-relock.sh --clear [connection-name]   # unpin only
 set -euo pipefail
 
@@ -23,7 +23,11 @@ FIVE_GHZ_MARGIN_DB="${FIVE_GHZ_MARGIN_DB:-8}"
 
 CLEAR_ONLY=0
 if [[ "${1:-}" == "--clear" ]]; then CLEAR_ONLY=1; shift; fi
-CONN="${1:-<SSID>}"
+# Default to whichever wifi connection is currently active, so the SSID is
+# never hardcoded here (this repo is public) and the script stays portable.
+CONN="${1:-$(nmcli -t -f NAME,TYPE connection show --active 2>/dev/null \
+  | awk -F: '$2 == "802-11-wireless" { print $1; exit }')}"
+[[ -n "${CONN}" ]] || { echo "error: no active wifi connection; pass one as \$1" >&2; exit 1; }
 
 log() { printf '==> %s\n' "$*"; }
 

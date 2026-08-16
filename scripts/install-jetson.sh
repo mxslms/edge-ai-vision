@@ -104,7 +104,12 @@ fi
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 [[ -f "${REPO_ROOT}/${COMPOSE_FILE}" ]] || die "compose file not found: ${REPO_ROOT}/${COMPOSE_FILE}"
-[[ -f "${REPO_ROOT}/deploy/jetson/edge-ai-vision.service" ]] || die "systemd unit missing under deploy/jetson/"
+for f in edge-ai-vision.service edge-ai-captures-browser.service \
+         edge-ai-vision-firewall.service edge-ai-vision-firewall.sh \
+         wifi-relock.sh wifi-revert.sh \
+         rtl8822ce-stability.conf wifi-powersave-off.conf; do
+  [[ -f "${REPO_ROOT}/deploy/jetson/${f}" ]] || die "missing deploy/jetson/${f}"
+done
 
 if [[ "${DO_LOGIN}" -eq 1 ]]; then
   if [[ -z "${GHCR_USER:-}" || -z "${GHCR_TOKEN:-}" ]]; then
@@ -167,7 +172,22 @@ else
   die "Failed to pull ${IMAGE}. Merge/publish the Jetson CI image, check GHCR auth, or re-run with --build-fallback."
 fi
 
-log "Installing tailnet-only firewall rule for port 5000"
+log "Installing WiFi stability config (Realtek rtl8822ce driver + NetworkManager)"
+# Load-time driver parameters; only take effect after a reboot. See the
+# comments in the file -- notably why rtw_max_roaming_times must NOT be set.
+sudo cp "${REPO_ROOT}/deploy/jetson/rtl8822ce-stability.conf" \
+  /etc/modprobe.d/rtl8822ce-stability.conf
+sudo mkdir -p /etc/NetworkManager/conf.d
+sudo cp "${REPO_ROOT}/deploy/jetson/wifi-powersave-off.conf" \
+  /etc/NetworkManager/conf.d/wifi-powersave-off.conf
+
+log "Installing WiFi pin/recovery helpers"
+for s in wifi-relock.sh wifi-revert.sh; do
+  sudo cp "${REPO_ROOT}/deploy/jetson/${s}" "/usr/local/sbin/${s}"
+  sudo chmod +x "/usr/local/sbin/${s}"
+done
+
+log "Installing tailnet-only firewall rules (ports 5000, 8000)"
 sudo cp "${REPO_ROOT}/deploy/jetson/edge-ai-vision-firewall.sh" \
   /usr/local/sbin/edge-ai-vision-firewall.sh
 sudo chmod +x /usr/local/sbin/edge-ai-vision-firewall.sh
@@ -175,6 +195,13 @@ sudo cp "${REPO_ROOT}/deploy/jetson/edge-ai-vision-firewall.service" \
   /etc/systemd/system/edge-ai-vision-firewall.service
 sudo systemctl daemon-reload
 sudo systemctl enable --now edge-ai-vision-firewall.service
+
+log "Installing captures browser (read-only image viewer on :8000)"
+sudo mkdir -p /var/lib/edge-ai-vision/captures
+sudo cp "${REPO_ROOT}/deploy/jetson/edge-ai-captures-browser.service" \
+  /etc/systemd/system/edge-ai-captures-browser.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now edge-ai-captures-browser.service
 
 if [[ "${INSTALL_SYSTEMD}" -eq 1 ]]; then
   log "Installing legacy systemd unit edge-ai-vision.service"

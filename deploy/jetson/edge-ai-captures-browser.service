@@ -6,12 +6,13 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-# Bound to all interfaces; tailnet-only access is enforced by
-# edge-ai-vision-firewall.service instead (same reasoning as the app's
-# port 5000 -- see that unit and RUNBOOK.md).
+# Bound to all interfaces on purpose. Pinning the bind to the Jetson's
+# Tailscale IP races with Tailscale coming up at boot and can silently fail;
+# tailnet-only access is enforced by edge-ai-vision-firewall.service instead.
 ExecStart=/usr/bin/python3 -m http.server 8000 --directory /var/lib/edge-ai-vision/captures
 Restart=on-failure
 RestartSec=5
+# Defense in depth: read-only view of training-data captures only.
 ProtectSystem=strict
 ReadOnlyPaths=/var/lib/edge-ai-vision/captures
 NoNewPrivileges=true

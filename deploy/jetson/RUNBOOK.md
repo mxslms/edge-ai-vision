@@ -190,8 +190,58 @@ every 12 hours before. So suppressing roaming does prevent this bug — it
 just has to be done without disabling join retries. Use BSSID pinning for
 that (below), which stops roaming without touching the retry counter.
 
-The 2026-08-16 12:40 UTC outage had a *different* cause — no `sme.c:1202`,
-no kernel warning — and is still under investigation.
+#### The 2026-08-16 12:40 UTC outage — also roaming, also made fatal by that param
+
+No `sme.c:1202`, no kernel warning. The logs show plain roam thrash:
+
+```
+DISCONNECTED from <AP1-5GHZ>   (the strong AP)
+CONNECTED    to <AP2-5GHZ>     (-71 dBm far node)
+DISCONNECTED
+CONNECTED    to <AP2-5GHZ-ALT>     (-72 dBm far node)
+DISCONNECTED
+ASSOC-REJECT status_code=1
+ASSOC-REJECT status_code=30           ("try again later")
+```
+
+Two lessons. First, `rtw_max_roaming_times=0` **never stopped roaming at
+all** — it only governs the *driver's* internal roam. `wpa_supplicant`
+does its own roaming via full disconnect→connect cycles and ignores that
+parameter entirely. Second, status code 30 is the AP saying *"retry
+shortly"* — and retries had been disabled, so a routine transient
+rejection became a dead device.
+
+Only a BSSID pin actually stops the roaming, because it constrains
+`wpa_supplicant` itself.
+
+#### Current configuration (2026-08-16)
+
+* BSSID pinned to `<AP1-2GHZ>`, band `bg` — -41 dBm, the strongest
+  AP in the room. Chosen over the 5 GHz radio at -60 dBm; 19 dB of extra
+  margin is worth far more here than 5 GHz cleanliness, since the device's
+  real bandwidth need is a few kb/s.
+* `rtw_power_mgnt=0`, `rtw_ips_mode=0`, `rtw_max_roaming_times` at default.
+* Verified across a reboot: pin re-applied automatically, device came back
+  unattended.
+* Baseline after settling: **170/170 pings, 0% loss** over 3 minutes.
+
+#### Measuring the link: do not trust numbers taken during churn
+
+While debugging this we recorded 11%, 32%, 20% and 25% packet loss and
+briefly concluded the link was failing, then that app CPU load was
+starving the network stack. Both were wrong. Every one of those samples
+was taken within a few minutes of a reboot, a WiFi re-pin, or a
+`iw ... scan` — and a scan alone forces the radio off-channel and drops
+traffic. Once nothing was being changed, loss was 0%.
+
+Method that actually works:
+
+* Let the device sit undisturbed for several minutes first.
+* Compare **LAN IP vs tailnet IP** in the same window. That one comparison
+  separates a radio problem from a Tailscale problem, and it is what
+  showed the radio was fine (0% on LAN while tailnet looked bad mid-churn).
+* Check `ip -s link show wlP1p1s0` for real `errors`/`dropped` counters
+  rather than inferring from ping alone.
 
 #### Pin to one BSSID (the safe way to stop roaming)
 

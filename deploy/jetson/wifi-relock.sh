@@ -13,8 +13,13 @@
 set -euo pipefail
 
 IFACE="${IFACE:-wlP1p1s0}"
-# 5 GHz is far less congested; prefer it unless it's weaker than this.
-FIVE_GHZ_FLOOR="${FIVE_GHZ_FLOOR:--65}"
+# 5 GHz is less congested, so prefer it -- but only when it is genuinely
+# comparable. Prefer the best 5 GHz radio only if it is within this many dB
+# of the strongest AP overall; otherwise take the strongest. An absolute
+# floor was the first attempt and it chose a -60 dBm 5 GHz AP over a -41 dBm
+# 2.4 GHz one in the same room, which is the wrong trade for an unattended
+# device whose actual bandwidth need is a few kb/s.
+FIVE_GHZ_MARGIN_DB="${FIVE_GHZ_MARGIN_DB:-8}"
 
 CLEAR_ONLY=0
 if [[ "${1:-}" == "--clear" ]]; then CLEAR_ONLY=1; shift; fi
@@ -54,12 +59,13 @@ CANDIDATES="$(iw dev "${IFACE}" scan 2>/dev/null | awk -v want="${SSID}" '
 log "Visible BSSIDs (strongest first):"
 echo "${CANDIDATES}" | awk '{printf "      %-20s %6s dBm  %s MHz\n", $2, $1, $3}'
 
-# Prefer the best 5 GHz radio if it clears the floor, else the strongest overall.
-BEST="$(echo "${CANDIDATES}" | awk -v floor="${FIVE_GHZ_FLOOR}" \
-  '$3 > 5000 && $1 >= floor { print $2; exit }')"
+# Strongest overall, unless a 5 GHz radio is within FIVE_GHZ_MARGIN_DB of it.
+STRONGEST_SIG="$(echo "${CANDIDATES}" | awk 'NR==1 { print $1 }')"
+BEST="$(echo "${CANDIDATES}" | awk -v best="${STRONGEST_SIG}" -v m="${FIVE_GHZ_MARGIN_DB}" \
+  '$3 > 5000 && ($1 - best) >= -m { print $2; exit }')"
 if [[ -z "${BEST}" ]]; then
   BEST="$(echo "${CANDIDATES}" | awk 'NR==1 { print $2 }')"
-  log "No 5 GHz BSSID at or above ${FIVE_GHZ_FLOOR} dBm; using strongest overall"
+  log "No 5 GHz BSSID within ${FIVE_GHZ_MARGIN_DB} dB of ${STRONGEST_SIG} dBm; using strongest overall"
 fi
 
 BAND="$(echo "${CANDIDATES}" | awk -v b="${BEST}" '$2 == b { print ($3 > 5000 ? "a" : "bg"); exit }')"

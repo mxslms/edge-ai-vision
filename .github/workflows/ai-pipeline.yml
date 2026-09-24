@@ -110,7 +110,7 @@ jobs:
       security-events: write
     steps:
       - name: Free up disk space
-        uses: jlumbroso/free-disk-space@54081f138730dfa15788a46383842cd2f914a1be # main -- was floating on the branch itself, now pinned
+        uses: jlumbroso/free-disk-space@ceedf095f4ec1a097402bc6bd80831f2e1a6fde6 # main -- was floating on the branch itself, now pinned
         with:
           tool-cache: false
           android: true
